@@ -19,14 +19,14 @@ if [ -z "$CMAKE" ]; then
   CM="$OUT/cmake"
   if [ ! -x "$CM/CMake.app/Contents/bin/cmake" ]; then
     mkdir -p "$CM"
-    curl -sSL "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VER/cmake-$CMAKE_VER-macos-universal.tar.gz" |
+    curl -sSLf --retry 5 --retry-all-errors "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VER/cmake-$CMAKE_VER-macos-universal.tar.gz" |
       tar -xz -C "$CM" --strip-components=1
   fi
   CMAKE="$CM/CMake.app/Contents/bin/cmake"
 fi
 
 TAR="$OUT/SDL3-$VER.tar.gz"
-[ -f "$TAR" ] || curl -sSL -o "$TAR" "https://github.com/libsdl-org/SDL/releases/download/release-$VER/SDL3-$VER.tar.gz"
+[ -f "$TAR" ] || curl -sSLf --retry 5 --retry-all-errors -o "$TAR" "https://github.com/libsdl-org/SDL/releases/download/release-$VER/SDL3-$VER.tar.gz"
 rm -rf "$OUT/src" "$OUT/build" "$OUT/prefix"
 mkdir -p "$OUT/src"
 tar -xzf "$TAR" -C "$OUT/src" --strip-components=1

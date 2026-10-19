@@ -18,7 +18,7 @@ docker run --rm -v "$ROOT":/src:ro -v "$ROOT/zig-out/dist":/out -v opengorky-lin
     cp -r /src /work && cd /work && rm -rf zig-out .zig-cache
     CROSS=x86_64-w64-mingw32 sh scripts/build-ffmpeg.sh /work/zig-out/ffmpeg >/dev/null
     mkdir -p zig-out/sdl3
-    curl -sSLf "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz" |
+    curl -sSLf --retry 5 --retry-all-errors "https://github.com/libsdl-org/SDL/releases/download/release-$SDL3_VERSION/SDL3-devel-$SDL3_VERSION-mingw.tar.gz" |
       tar -xz -C zig-out/sdl3 --strip-components=1
     SDL=/work/zig-out/sdl3/x86_64-w64-mingw32
     zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSafe -Dviewer-optimize="$OPT" -Dstrip=true \

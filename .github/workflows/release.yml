@@ -39,7 +39,7 @@ jobs:
           git tag "$TAG"
       - name: Zig
         run: |
-          curl -sSL https://ziglang.org/download/$ZIG/zig-aarch64-macos-$ZIG.tar.xz | tar -xJ -C "$RUNNER_TEMP"
+          curl -sSLf --retry 5 --retry-all-errors https://ziglang.org/download/$ZIG/zig-aarch64-macos-$ZIG.tar.xz | tar -xJ -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-aarch64-macos-$ZIG" >> "$GITHUB_PATH"
       - name: Developer ID keychain
         if: env.HAS_CERT == 'true'

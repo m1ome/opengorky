@@ -18,7 +18,7 @@ OUT=${1:-$ROOT/zig-out/ffmpeg}
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 TAR="$OUT/ffmpeg-$VER.tar.xz"
-[ -f "$TAR" ] || curl -sSL -o "$TAR" "https://ffmpeg.org/releases/ffmpeg-$VER.tar.xz"
+[ -f "$TAR" ] || curl -sSLf --retry 5 --retry-all-errors -o "$TAR" "https://ffmpeg.org/releases/ffmpeg-$VER.tar.xz"
 rm -rf "$OUT/src" "$OUT/prefix"
 mkdir -p "$OUT/src"
 tar -xJf "$TAR" -C "$OUT/src" --strip-components=1
