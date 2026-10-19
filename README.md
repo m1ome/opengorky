@@ -141,7 +141,8 @@ scripts/dist-windows.sh          # zig-out/dist/opengorky-windows-x86_64.zip (Do
   **Open Anyway**, or `xattr -dr com.apple.quarantine OpenGorky.app`.
 - **Linux**: built on Debian trixie, libraries in `lib/` with an `$ORIGIN/lib` rpath.
 - **Windows**: the viewer is cross-built with Zig, FFmpeg with mingw-w64.
-- **CI**: `.github/workflows/release.yml` builds all packages; pushing a `v*` tag publishes
+- **CI**: `.github/workflows/release.yml` builds all packages; pushing a `v*` tag, or
+  running it manually with a tag (`gh workflow run release.yml -f tag=v0.1.1`), publishes
   a GitHub release.
 
 ## Tools
