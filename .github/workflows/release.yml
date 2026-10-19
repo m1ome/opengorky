@@ -18,6 +18,9 @@ env:
 jobs:
   macos:
     runs-on: macos-15
+    env:
+      # Secrets can't be tested in `if:`; without them the build stays ad-hoc signed.
+      HAS_CERT: ${{ secrets.MACOS_CERT_P12 != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,7 +30,34 @@ jobs:
         run: |
           curl -sSL https://ziglang.org/download/$ZIG/zig-aarch64-macos-$ZIG.tar.xz | tar -xJ -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-aarch64-macos-$ZIG" >> "$GITHUB_PATH"
+      - name: Developer ID keychain
+        if: env.HAS_CERT == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          KC="$RUNNER_TEMP/sign.keychain-db"
+          PW=$(openssl rand -hex 16)
+          security create-keychain -p "$PW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$PW" "$KC"
+          echo "$MACOS_CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -k "$PW" "$KC" >/dev/null
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')
+          xcrun notarytool store-credentials opengorky --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD"
+          ID=$(security find-identity -v -p codesigning "$KC" | awk -F'"' '/Developer ID Application/{print $2; exit}')
+          [ -n "$ID" ] || { echo "no Developer ID Application identity in the .p12" >&2; exit 1; }
+          echo "SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          echo "NOTARY_PROFILE=opengorky" >> "$GITHUB_ENV"
       - run: scripts/dist-macos.sh
+      - name: Remove keychain
+        if: always() && env.HAS_CERT == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/sign.keychain-db" || true
       - uses: actions/upload-artifact@v4
         with:
           name: macos

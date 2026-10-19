@@ -33,7 +33,7 @@ Prebuilt packages are on the [latest release](../../releases/latest) page:
 
 | Platform | Package | How to run |
 |---|---|---|
-| macOS 13+ (Apple Silicon and Intel) | `OpenGorky-macos-*.zip` | Unzip, then right-click `OpenGorky.app` → **Open** the first time (the app is not notarized). It asks for the game folder once. |
+| macOS 13+ (Apple Silicon and Intel) | `OpenGorky-macos-x86_64-arm64.zip` | Unzip and open `OpenGorky.app`. It asks for the game folder once. |
 | Windows 10+ (x86_64) | `opengorky-windows-x86_64.zip` | Unzip and run `OpenGorky.exe`. It asks for the game folder once. SmartScreen may warn: **More info → Run anyway**. |
 | Linux x86_64 / aarch64 (glibc 2.41+) | `opengorky-linux-<arch>.tar.xz` | Unpack and run `./opengorky <game dir>`. An icon and a `.desktop` file are included. |
 
@@ -136,7 +136,9 @@ scripts/dist-windows.sh          # zig-out/dist/opengorky-windows-x86_64.zip (Do
 - **SDL3**: macOS uses its own universal build (`scripts/build-sdl3.sh`), Linux Debian's,
   Windows the official mingw release.
 - **macOS**: ad-hoc signed; set `SIGN_IDENTITY` and `NOTARY_PROFILE` for Developer ID
-  signing and notarization.
+  signing and notarization. An ad-hoc build downloaded from the internet is blocked by
+  Gatekeeper ("Apple could not verify…"): open it via System Settings → Privacy & Security →
+  **Open Anyway**, or `xattr -dr com.apple.quarantine OpenGorky.app`.
 - **Linux**: built on Debian trixie, libraries in `lib/` with an `$ORIGIN/lib` rpath.
 - **Windows**: the viewer is cross-built with Zig, FFmpeg with mingw-w64.
 - **CI**: `.github/workflows/release.yml` builds all packages; pushing a `v*` tag publishes
