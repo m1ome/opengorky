@@ -13,6 +13,7 @@
 <p align="center">
   <a href="../../releases/latest"><b>Download</b></a> ·
   <a href="#playing">Playing</a> ·
+  <a href="#configuration">Configuration</a> ·
   <a href="#building">Building</a> ·
   <a href="#tools">Tools</a>
 </p>
@@ -68,31 +69,78 @@ case-insensitive and fonts follow the edition language.
 | F11, Alt+Enter, Cmd+Enter | fullscreen |
 | `` ` `` or F2 | debug console, only with `console = 1` or `--dev` |
 
-Command line flags: `--mute` (or `OPENGORKY_MUTE=1`), `--no-sfx` (or `OPENGORKY_NO_SFX=1`).
-The game folder can also be given with `OPENGORKY_GAME` (macOS app).
+## Configuration
 
-### Saves and settings
+### Where files live
 
-| | Settings `opengorky.cfg` | Saves |
+| | Settings `opengorky.cfg`, mods | Saves |
 |---|---|---|
-| macOS | `~/Library/Application Support/OpenGorky/` | `…/OpenGorky/saves` |
-| Linux | `$XDG_CONFIG_HOME/opengorky/` (`~/.config/opengorky/`) | `$XDG_DATA_HOME/opengorky/saves` (`~/.local/share/opengorky/saves`) |
-| Windows | `%APPDATA%\OpenGorky\` | `%APPDATA%\OpenGorky\saves` |
+| macOS | `~/Library/Application Support/OpenGorky/` | `~/Library/Application Support/OpenGorky/saves/` |
+| Linux | `$XDG_CONFIG_HOME/opengorky/` (default `~/.config/opengorky/`) | `$XDG_DATA_HOME/opengorky/saves/` (default `~/.local/share/opengorky/saves/`) |
+| Windows | `%APPDATA%\OpenGorky\` | `%APPDATA%\OpenGorky\saves\` |
 
-`OPENGORKY_SAVES` overrides the saves folder. Missing keys are appended to `opengorky.cfg`
-on save:
+### `opengorky.cfg`
 
-| Key | Values |
+A plain text file with `key = value` lines; `#` starts a comment. It is created with
+defaults and explanations on the first launch. If a newer version adds keys, the file is
+rewritten on startup with them added: your values are kept, your own comments are not.
+Unknown keys and bad values are ignored. Scaling (F10) and fullscreen toggles made in the
+game are saved back to it.
+
+```ini
+scaling = integer
+hires = 1
+upscale = xbr
+fullscreen = 0
+fps_limit = 60
+fps_background = 15
+pause_background = 1
+log = warn
+debug = 0
+console = 0
+game_path = /path/to/Gorky 17
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `scaling` | `integer` | How the 640×480 frame fills the window: `integer` — integer zoom, crisp pixels, may leave borders; `sharp` — fill the window with sharp pixels; `smooth` — fill the window, smoothed |
+| `hires` | `1` | `1` — models, shadows and effects are drawn at window resolution (backgrounds and UI keep their pixels); `0` — 640×480 like the original |
+| `upscale` | `xbr` | UI, icons and portraits with `hires`: `xbr` — smoothed edges (xBR); `off` — the original pixels, just larger |
+| `fullscreen` | `0` | Start in fullscreen (in the game: F11, Alt+Enter, Cmd+Enter, Ctrl+Cmd+F) |
+| `fps_limit` | `60` | Frame cap in the focused window; `0` — display rate (vsync). The world always runs at 30 ticks per second, like the original |
+| `fps_background` | `15` | Frame cap when the window is not focused; `0` — same as focused. A minimized or fully covered window is not drawn at all |
+| `pause_background` | `1` | Pause the game and sound when the window loses focus or is minimized |
+| `log` | `warn` | Terminal messages: `none`, `warn`, `info` |
+| `debug` | `0` | Debug overlays: battle status line, health bars, F1 line |
+| `console` | `0` | Developer console (`` ` `` or F2) with debug commands: heal, win the battle, give items… |
+| `game_path` | empty | The game folder, used when none is given at launch. Set automatically on the first launch with a path or after picking the folder |
+
+On/off keys accept `1`/`0`, `on`/`off` or `true`/`false`.
+
+### Environment variables
+
+| Variable | Effect |
 |---|---|
-| `scaling` | `integer` / `sharp` / `smooth` |
-| `hires` | render models, shadows and effects at window resolution, up to 4×; `0` = 640×480 |
-| `upscale` | `xbr` / `off` — UI sprites at `hires` |
-| `fullscreen` | `0` / `1` |
-| `fps_limit`, `fps_background` | `60`, `15` |
-| `pause_background` | `1` — pause when the window loses focus |
-| `log` | `none` / `warn` / `info` |
-| `debug`, `console` | debug labels; debug console |
-| `game_path` | the game folder |
+| `OPENGORKY_SAVES` | Saves folder instead of the default one |
+| `OPENGORKY_MODS` | Mods folder instead of `<settings folder>/mods` |
+| `OPENGORKY_MUTE` | Set (to any value): no sound, as `--mute` |
+| `OPENGORKY_NO_SFX` | Set: no sound effects or voices, music only, as `--no-sfx` |
+| `OPENGORKY_GAME` | macOS app: the game folder, overriding `game_path` |
+
+### Command line
+
+```sh
+opengorky-viewer <game dir> --play [options]   # Linux: opengorky <game dir> [options]
+```
+
+| Option | Effect |
+|---|---|
+| `--mute`, `--no-sfx` | No sound; no sound effects or voices |
+| `--fps N` | Frame cap instead of `fps_limit` (`0` — display rate) |
+| `--hires N` | Fixed frame detail 1–4× instead of following the window size |
+| `--upscale xbr\|off` | Instead of the `upscale` setting |
+| `--window W,H` | Initial window size in points (default 1280,960) |
+| `--dev` | Enable the developer console even with `console = 0` |
 
 ### Mods
 
