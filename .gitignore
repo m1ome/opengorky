@@ -1,0 +1,8 @@
+.zig-cache/
+zig-out/
+# Original game files are never committed.
+*.dat
+*.kdt
+*.asf
+*.avi
+.DS_Store

@@ -1,0 +1,7 @@
+.{
+    .name = .opengorky,
+    .version = "0.0.1",
+    .fingerprint = 0x92014de1145a7af7,
+    .minimum_zig_version = "0.17.0",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "LICENSE", "README.md" },
+}
