@@ -1,10 +1,45 @@
-# OpenGorky
+<p align="center">
+  <img src="assets/icon-256.png" width="128" alt="OpenGorky icon">
+</p>
 
-A free reimplementation of the **Gorky 17** engine (Odium, Metropolis Software, 1999) in Zig
-0.17 + SDL3, for macOS, Linux and Windows, MIT. It aims to be an exact port. You need the original
-game files (e.g. the GOG version); none are in this repository.
+<h1 align="center">OpenGorky</h1>
 
-### Game files needed
+<p align="center">
+  An open-source reimplementation of the <b>Gorky 17</b> engine<br>
+  (<i>Odium</i> in North America, Metropolis Software, 1999)<br>
+  for macOS, Linux and Windows, written in Zig + SDL3.
+</p>
+
+<p align="center">
+  <a href="../../releases/latest"><b>Download</b></a> ·
+  <a href="#playing">Playing</a> ·
+  <a href="#building">Building</a> ·
+  <a href="#tools">Tools</a>
+</p>
+
+---
+
+OpenGorky aims to be an **exact port**: the battle rules, AI, scripts, effects and timings are
+reconstructed from the original `gorky17.exe`, and gameplay is bit-identical across build
+modes and CPU architectures. On top of that it runs natively on modern systems, at high
+resolution, with fullscreen scaling and a modern save location.
+
+> **You need the original game files** (for example the GOG version). None are included in
+> this repository or in the release packages.
+
+## Download
+
+Prebuilt packages are on the [latest release](../../releases/latest) page:
+
+| Platform | Package | How to run |
+|---|---|---|
+| macOS 13+ (Apple Silicon and Intel) | `OpenGorky-macos-*.zip` | Unzip, then right-click `OpenGorky.app` → **Open** the first time (the app is not notarized). It asks for the game folder once. |
+| Windows 10+ (x86_64) | `opengorky-windows-x86_64.zip` | Unzip and run `OpenGorky.exe`. It asks for the game folder once. SmartScreen may warn: **More info → Run anyway**. |
+| Linux x86_64 / aarch64 (glibc 2.41+) | `opengorky-linux-<arch>.tar.xz` | Unpack and run `./opengorky <game dir>`. An icon and a `.desktop` file are included. |
+
+### Game files
+
+Point OpenGorky at the folder of your Gorky 17 installation. It uses only:
 
 | What | Why |
 |---|---|
@@ -12,57 +47,12 @@ game files (e.g. the GOG version); none are in this repository.
 | `avi/` | videos and some music (`*.asf`) |
 | `adjust.kdt` | engine tuning (weapons, effects, sound, camera); without it defaults are used |
 
-Nothing else (`gorky17.exe`, DLLs, installer) is used. Original saves are not read. Other
-editions on the same engine work too, e.g. the Russian «Горький-18»: file names are
-case-insensitive and fonts follow the edition language (`string.tab` line 950).
+Nothing else (`gorky17.exe`, DLLs, installer) is used. Original saves are not read.
 
-## Build
-
-Zig 0.17.0, SDL3 (`brew install sdl3` or `libsdl3-dev`) with `pkg-config`. Videos (MS-MPEG4 +
-WMA/MP3) use FFmpeg libraries if found (`brew install ffmpeg` / `libav*-dev`);
-`-Dffmpeg=false` falls back to an external `ffmpeg` program.
-
-```sh
-zig build        # zig-out/bin/gorky-tool, zig-out/bin/opengorky-viewer
-zig build test
-```
-
-- Viewer: ReleaseFast with debug info by default (`-Dviewer-optimize=safe|debug`).
-  ReleaseSmall is avoided: LLVM's MachineOutliner miscompiles on arm64 with Zig 0.17.
-- gorky-tool: ReleaseSafe (`-Dtool-optimize=debug`). `-Dstrip=true` drops debug info.
-- Gameplay is bit-identical across build modes and x86_64 (no `@setFloatMode`).
-
-Checks: `zig build test`, `scripts/regress.sh <game dir>`, `scripts/fullgame.sh <game dir>`.
-
-### Distribution
-
-```sh
-scripts/dist-macos.sh                # zig-out/dist/OpenGorky.app + zip (arm64 + x86_64)
-scripts/dist-linux.sh [game dir]     # zig-out/dist/opengorky-linux-<arch>.tar.xz (Docker)
-scripts/dist-windows.sh              # zig-out/dist/opengorky-windows-x86_64.zip (Docker, cross build)
-```
-
-- FFmpeg: `scripts/build-ffmpeg.sh` builds a minimal FFmpeg 9.0.1 (ASF, MS-MPEG4, WMA, MP3,
-  swscale, swresample; ~2 MB) → `-Dffmpeg-prefix=…/prefix`. Shipped as replaceable shared
-  libraries (LGPL).
-- SDL3: macOS `scripts/build-sdl3.sh` (universal, Cocoa/Metal/CoreAudio) →
-  `-Dsdl-prefix=…/prefix`; Linux uses Debian's.
-- macOS: universal `.app`, ad-hoc signed (`SIGN_IDENTITY`/`NOTARY_PROFILE` for Developer ID
-  signing and notarization); asks for the game folder on first run and stores it
-  as `game_path` (or `OPENGORKY_GAME`). First launch: right-click → Open.
-- Linux: `opengorky <game dir>`, icon, `.desktop`, `lib/` with `$ORIGIN/lib` rpath; built on
-  Debian trixie (glibc 2.41+).
-- Windows: cross-built with Zig (viewer) and mingw-w64 (FFmpeg), official SDL3 mingw DLL;
-  `OpenGorky.exe` with no arguments starts the game and asks for the game folder once.
-- CI: `.github/workflows/release.yml` builds all packages; a `v*` tag publishes a release.
-
-Licences in the package: OpenGorky MIT, SDL3 zlib, FFmpeg LGPL 2.1+.
+Other editions on the same engine work too, e.g. the Russian «Горький-18»: file names are
+case-insensitive and fonts follow the edition language.
 
 ## Playing
-
-```sh
-zig build viewer -- <game dir> --play
-```
 
 | Key | |
 |---|---|
@@ -78,37 +68,111 @@ zig build viewer -- <game dir> --play
 | F11, Alt+Enter, Cmd+Enter | fullscreen |
 | `` ` `` or F2 | debug console, only with `console = 1` or `--dev` |
 
-- Saves: `~/Library/Application Support/OpenGorky/saves` (macOS),
-  `$XDG_DATA_HOME/opengorky/saves` (Linux), `%APPDATA%\OpenGorky\saves` (Windows).
-- `--no-sfx` / `OPENGORKY_NO_SFX=1`, `--mute` / `OPENGORKY_MUTE=1`.
+Command line flags: `--mute` (or `OPENGORKY_MUTE=1`), `--no-sfx` (or `OPENGORKY_NO_SFX=1`).
+The game folder can also be given with `OPENGORKY_GAME` (macOS app).
 
-Settings `opengorky.cfg` (macOS `~/Library/Application Support/OpenGorky/`, Linux
-`~/.config/opengorky/`; missing keys are appended): `scaling` (integer/sharp/smooth),
-`hires` (render models, shadows, effects at window resolution, up to 4×; 0 = 640×480),
-`upscale` (xbr/off, UI sprites at `hires`), `fullscreen`, `debug` (debug labels only),
-`log` (none/warn/info), `fps_limit` (60), `fps_background` (15), `pause_background` (1),
-`console` (0), `game_path`.
+### Saves and settings
 
-## Resource viewer
+| | Settings `opengorky.cfg` | Saves |
+|---|---|---|
+| macOS | `~/Library/Application Support/OpenGorky/` | `…/OpenGorky/saves` |
+| Linux | `$XDG_CONFIG_HOME/opengorky/` (`~/.config/opengorky/`) | `$XDG_DATA_HOME/opengorky/saves` (`~/.local/share/opengorky/saves`) |
+| Windows | `%APPDATA%\OpenGorky\` | `%APPDATA%\OpenGorky\saves` |
+
+`OPENGORKY_SAVES` overrides the saves folder. Missing keys are appended to `opengorky.cfg`
+on save:
+
+| Key | Values |
+|---|---|
+| `scaling` | `integer` / `sharp` / `smooth` |
+| `hires` | render models, shadows and effects at window resolution, up to 4×; `0` = 640×480 |
+| `upscale` | `xbr` / `off` — UI sprites at `hires` |
+| `fullscreen` | `0` / `1` |
+| `fps_limit`, `fps_background` | `60`, `15` |
+| `pause_background` | `1` — pause when the window loses focus |
+| `log` | `none` / `warn` / `info` |
+| `debug`, `console` | debug labels; debug console |
+| `game_path` | the game folder |
+
+### Mods
+
+Scripts and objects placed in `<game>/mods` or `<config dir>/mods` (or `$OPENGORKY_MODS`)
+are looked up before the game archives, so levels, fighters and weapons can be changed or
+added without touching the original files. Custom fighters use the generic class
+(`classType = 100`): attacks, AI and resistances come from their `.ftr`/`.wpn` fields.
+
+## Building
+
+Requirements: [Zig 0.17.0](https://ziglang.org/download/), SDL3 and `pkg-config`
+(`brew install sdl3` / `apt install libsdl3-dev`). Videos (MS-MPEG4 + WMA/MP3) use the FFmpeg
+libraries if found (`brew install ffmpeg` / `libav*-dev`); with `-Dffmpeg=false` an
+external `ffmpeg` program is used instead.
+
+```sh
+zig build                             # zig-out/bin/opengorky-viewer, zig-out/bin/gorky-tool
+zig build test
+zig build viewer -- <game dir> --play # build and play
+```
+
+- The viewer builds ReleaseFast with debug info by default (`-Dviewer-optimize=safe|debug`).
+  ReleaseSmall is avoided: LLVM's MachineOutliner miscompiles on arm64 with Zig 0.17.
+- gorky-tool builds ReleaseSafe (`-Dtool-optimize=debug`). `-Dstrip=true` drops debug info.
+- Gameplay does not depend on the build mode or the CPU (no `@setFloatMode`).
+
+Regression checks with the game data: `scripts/regress.sh <game dir>`,
+`scripts/fullgame.sh <game dir>` (full playthrough), `scripts/linux/check.sh <game dir>`
+(everything in a Linux container).
+
+### Packages
+
+```sh
+scripts/dist-macos.sh            # zig-out/dist/OpenGorky.app + zip (universal arm64 + x86_64)
+scripts/dist-linux.sh [game dir] # zig-out/dist/opengorky-linux-<arch>.tar.xz (Docker)
+scripts/dist-windows.sh          # zig-out/dist/opengorky-windows-x86_64.zip (Docker, cross build)
+```
+
+- **FFmpeg**: `scripts/build-ffmpeg.sh` builds a minimal FFmpeg 9.0.1 (ASF, MS-MPEG4, WMA,
+  MP3, swscale, swresample; ~2 MB), shipped as replaceable shared libraries (LGPL).
+- **SDL3**: macOS uses its own universal build (`scripts/build-sdl3.sh`), Linux Debian's,
+  Windows the official mingw release.
+- **macOS**: ad-hoc signed; set `SIGN_IDENTITY` and `NOTARY_PROFILE` for Developer ID
+  signing and notarization.
+- **Linux**: built on Debian trixie, libraries in `lib/` with an `$ORIGIN/lib` rpath.
+- **Windows**: the viewer is cross-built with Zig, FFmpeg with mingw-w64.
+- **CI**: `.github/workflows/release.yml` builds all packages; pushing a `v*` tag publishes
+  a GitHub release.
+
+## Tools
+
+### Resource viewer
 
 ```sh
 zig build viewer -- <game dir> [01_port/sprite.dat] [--image N] [--shot out.png]
 ```
 
 Without `--play`: `[` `]` archive, `↑` `↓` resource, `←` `→` frame, Space animate, `L` level
-mode. `--shot` renders one frame and
-exits (`--level`, `--scroll X,Y`, `--time MS`, `--hide-objects`).
+mode. `--shot` renders one frame and exits (`--level`, `--scroll X,Y`, `--time MS`,
+`--hide-objects`).
 
-## gorky-tool
+### gorky-tool
 
 ```sh
-gorky-tool list    <game>/dat/common/other.dat
+gorky-tool list    <game>/dat/common/other.dat           # archive contents
 gorky-tool extract <game>/dat/01_port/other.dat out/01_port
 gorky-tool export  <game>/dat/01_port/sprite.dat png/01_port
-gorky-tool check   <game>
+gorky-tool check   <game>                                # decode all game data
 gorky-tool scripts <game> [--api]
 gorky-tool world   <game> 01_port 100
 gorky-tool listen  <game> 01_port 30 port.wav 1700,200
-gorky-tool play    <game> 01_port …
+gorky-tool play    <game> 01_port …                      # headless play scenarios
 ```
 
+## License
+
+OpenGorky is [MIT](LICENSE). Release packages also contain SDL3 (zlib) and FFmpeg
+(LGPL 2.1+, as shared libraries you can replace); their licenses are in the package.
+Bundled decoders: [stb_image](https://github.com/nothings/stb) and
+[dr_libs](https://github.com/mackron/dr_libs) (public domain / MIT-0).
+
+Gorky 17 and Odium are trademarks of their respective owners. This project is not
+affiliated with or endorsed by them and contains no original game content.
