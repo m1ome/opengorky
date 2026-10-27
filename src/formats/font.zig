@@ -3,8 +3,9 @@
 //! `CZC1`, `u32 data size`, 256 × `u32` glyph offset (from the data start,
 //! `0xFFFFFFFF` — no glyph), data. Glyph: `u32 width`, `u32 height`, `u32` (1),
 //! `u32` (0), `width × height` bytes row by row, then padding to 4 bytes.
-//! A byte is a color index, not a brightness: every game font has exactly two, the
-//! most frequent is the glyph background (0 dialogue, 3 small, 1 system), the other the letter.
+//! A byte is a color index, not a brightness: the most frequent is the glyph
+//! background (0 dialogue, 3 small, 1 system), the others form the letter.
+//! Language sets can use different indices from their base font.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -15,7 +16,7 @@ const magic = "CZC1";
 const Glyph = struct {
     width: u32,
     height: u32,
-    /// Brightness 0..max row by row; points into the source bytes.
+    /// Color indices row by row; points into the source bytes.
     pixels: []const u8,
 };
 
@@ -121,22 +122,38 @@ test "parse and measure" {
 /// Overlay a language letter set (0x47b2a0): a `CZC1` file with `base` glyphs, replaced
 /// where `extra` has its own. This is how the exe builds font N from `<name>_1.fnt` and
 /// `<name>_N_xx.fnt` (the Russian edition puts cp1251 Cyrillic into set 5).
+/// Normalize differing background indices so the result has one transparency mask.
 pub fn merge(gpa: Allocator, base: []const u8, extra: []const u8) (Error || Allocator.Error)![]u8 {
-    _ = try parse(base);
-    _ = try parse(extra);
+    const base_font = try parse(base);
+    const extra_font = try parse(extra);
     var data: std.ArrayList(u8) = .empty;
     defer data.deinit(gpa);
     var offs: [256]u32 = @splat(0xffff_ffff);
     for (&offs, 0..) |*o, i| {
-        const src = for ([2][]const u8{ extra, base }) |b| {
+        const source = for ([2][]const u8{ extra, base }, [2]u8{ extra_font.bg, base_font.bg }) |b, bg| {
             const off = std.mem.readInt(u32, b[8 + i * 4 ..][0..4], .little);
-            if (off != 0xffff_ffff) break b[8 + 1024 + off ..];
+            if (off != 0xffff_ffff) break .{
+                .bytes = b[8 + 1024 + off ..],
+                .bg = bg,
+            };
         } else continue;
+        const src = source.bytes;
         const w = std.mem.readInt(u32, src[0..4], .little);
         const h = std.mem.readInt(u32, src[4..8], .little);
         const n = 16 + @as(usize, w) * h;
         o.* = @intCast(data.items.len);
         try data.appendSlice(gpa, src[0..n]);
+        // Swap background indices so ink using the target background stays visible.
+        // Leave unrelated color indices intact.
+        if (source.bg != base_font.bg) {
+            for (data.items[o.* + 16 ..][0 .. n - 16]) |*v| {
+                if (v.* == source.bg) {
+                    v.* = base_font.bg;
+                } else if (v.* == base_font.bg) {
+                    v.* = source.bg;
+                }
+            }
+        }
         while (data.items.len % 4 != 0) try data.append(gpa, 0);
     }
     const out = try gpa.alloc(u8, 8 + 1024 + data.items.len);
@@ -171,6 +188,64 @@ test merge {
     try std.testing.expectEqual(3, f.glyphs['a'].?.width);
     try std.testing.expectEqual(4, f.glyphs[0xff].?.width);
     try std.testing.expectEqual(null, f.glyphs['b']);
+}
+
+test "merge preserves rendered language glyph masks" {
+    const gpa = std.testing.allocator;
+    const Colors = struct { bg: u8, fg: u8, extra_bg: u8, extra_fg: u8, extra_fg2: u8 };
+    const cases = [_]Colors{
+        .{ .bg = 3, .fg = 4, .extra_bg = 0, .extra_fg = 3, .extra_fg2 = 3 }, // Polish small
+        .{ .bg = 0, .fg = 3, .extra_bg = 0, .extra_fg = 3, .extra_fg2 = 3 }, // Dialogue
+        .{ .bg = 1, .fg = 3, .extra_bg = 1, .extra_fg = 3, .extra_fg2 = 3 }, // System
+        .{ .bg = 0, .fg = 3, .extra_bg = 3, .extra_fg = 4, .extra_fg2 = 4 }, // Reverse collision
+        .{ .bg = 3, .fg = 4, .extra_bg = 3, .extra_fg = 5, .extra_fg2 = 6 }, // Same background, other ink
+        .{ .bg = 3, .fg = 4, .extra_bg = 0, .extra_fg = 5, .extra_fg2 = 6 }, // Several ink indices
+        .{ .bg = 3, .fg = 3, .extra_bg = 0, .extra_fg = 3, .extra_fg2 = 3 }, // Blank base
+    };
+    for (cases) |colors| {
+        const bg = colors.bg;
+        const fg = colors.fg;
+        const extra_bg = colors.extra_bg;
+        const extra_fg = colors.extra_fg;
+        const extra_fg2 = colors.extra_fg2;
+        const main_px = [_]u8{ bg, bg, bg, bg, fg, bg, bg, bg, bg };
+        const extra_px = [_]u8{ extra_bg, extra_fg, extra_bg, extra_bg, extra_fg2, extra_bg, extra_bg, extra_bg, extra_bg };
+        var main_glyphs: [256]?EditGlyph = @splat(null);
+        main_glyphs['A'] = .{ .width = 3, .height = 3, .pixels = &main_px, .order = 0 };
+        main_glyphs[0x9c] = main_glyphs['A'];
+        main_glyphs[0xdf] = main_glyphs['A'];
+        main_glyphs[0xff] = main_glyphs['A'];
+        var extra_glyphs: [256]?EditGlyph = @splat(null);
+        // Exercise CP1250 ś and CP1251 Я/я byte slots without recoding them.
+        extra_glyphs[0x9c] = .{ .width = 3, .height = 3, .pixels = &extra_px, .order = 0 };
+        extra_glyphs[0xdf] = extra_glyphs[0x9c];
+        extra_glyphs[0xff] = extra_glyphs[0x9c];
+        const main_bytes = try encode(gpa, &main_glyphs);
+        defer gpa.free(main_bytes);
+        const extra_bytes = try encode(gpa, &extra_glyphs);
+        defer gpa.free(extra_bytes);
+        const merged = try merge(gpa, main_bytes, extra_bytes);
+        defer gpa.free(merged);
+        const f = try parse(merged);
+        try std.testing.expectEqual(bg, f.bg);
+        try std.testing.expectEqualSlices(u8, &main_px, f.glyphs['A'].?.pixels);
+        if (bg == extra_bg) try std.testing.expectEqualSlices(u8, &extra_px, f.glyphs[0x9c].?.pixels);
+        // Ink indices unrelated to either background must not be collapsed.
+        if (extra_fg == 5) {
+            try std.testing.expectEqual(5, f.glyphs[0x9c].?.pixels[1]);
+            try std.testing.expectEqual(6, f.glyphs[0x9c].?.pixels[4]);
+        }
+        try std.testing.expectEqual(8, f.measure("A\x9c\xdf\xff"));
+        try std.testing.expectEqual(null, f.glyphs['B']);
+        var img = try Image.init(gpa, 10, 3);
+        defer img.deinit(gpa);
+        f.draw(img, 0, 0, "A\x9c\xdf\xff", .{ 210, 210, 192 });
+        for (0..3) |y| for (0..10) |x| {
+            const on = (x == 1 and y == 1 and fg != bg) or ((x == 3 or x == 5 or x == 7) and y < 2);
+            const expected = if (on) [_]u8{ 210, 210, 192, 255 } else [_]u8{ 0, 0, 0, 0 };
+            try std.testing.expectEqualSlices(u8, &expected, img.pixels[(y * 10 + x) * 4 ..][0..4]);
+        };
+    }
 }
 
 /// A glyph to write: its size, pixels (colour indices, row by row) and place in the data
