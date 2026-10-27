@@ -216,8 +216,13 @@ test "merge preserves rendered language glyph masks" {
         var main_glyphs: [256]?EditGlyph = @splat(null);
         main_glyphs['A'] = .{ .width = 3, .height = 3, .pixels = &main_px, .order = 0 };
         main_glyphs[0x9c] = main_glyphs['A'];
+        main_glyphs[0xdf] = main_glyphs['A'];
+        main_glyphs[0xff] = main_glyphs['A'];
         var extra_glyphs: [256]?EditGlyph = @splat(null);
+        // Exercise CP1250 ś and CP1251 Я/я byte slots without recoding them.
         extra_glyphs[0x9c] = .{ .width = 3, .height = 3, .pixels = &extra_px, .order = 0 };
+        extra_glyphs[0xdf] = extra_glyphs[0x9c];
+        extra_glyphs[0xff] = extra_glyphs[0x9c];
         const main_bytes = try encode(gpa, &main_glyphs);
         defer gpa.free(main_bytes);
         const extra_bytes = try encode(gpa, &extra_glyphs);
@@ -228,15 +233,15 @@ test "merge preserves rendered language glyph masks" {
         try std.testing.expectEqual(bg, f.bg);
         try std.testing.expectEqualSlices(u8, &main_px, f.glyphs['A'].?.pixels);
         if (bg == extra_bg) try std.testing.expectEqualSlices(u8, &extra_px, f.glyphs[0x9c].?.pixels);
-        try std.testing.expectEqual(4, f.measure("A\x9c"));
+        try std.testing.expectEqual(8, f.measure("A\x9c\xdf\xff"));
         try std.testing.expectEqual(null, f.glyphs['B']);
-        var img = try Image.init(gpa, 6, 3);
+        var img = try Image.init(gpa, 10, 3);
         defer img.deinit(gpa);
-        f.draw(img, 0, 0, "A\x9c", .{ 210, 210, 192 });
-        for (0..3) |y| for (0..6) |x| {
-            const on = (x == 1 and y == 1 and fg != bg) or (x == 3 and y < 2);
+        f.draw(img, 0, 0, "A\x9c\xdf\xff", .{ 210, 210, 192 });
+        for (0..3) |y| for (0..10) |x| {
+            const on = (x == 1 and y == 1 and fg != bg) or ((x == 3 or x == 5 or x == 7) and y < 2);
             const expected = if (on) [_]u8{ 210, 210, 192, 255 } else [_]u8{ 0, 0, 0, 0 };
-            try std.testing.expectEqualSlices(u8, &expected, img.pixels[(y * 6 + x) * 4 ..][0..4]);
+            try std.testing.expectEqualSlices(u8, &expected, img.pixels[(y * 10 + x) * 4 ..][0..4]);
         };
     }
 }
