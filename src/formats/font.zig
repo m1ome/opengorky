@@ -143,11 +143,8 @@ pub fn merge(gpa: Allocator, base: []const u8, extra: []const u8) (Error || Allo
         const n = 16 + @as(usize, w) * h;
         o.* = @intCast(data.items.len);
         try data.appendSlice(gpa, src[0..n]);
-        // 03_small uses background 3 / letter 4, but its Polish set uses
-        // background 0 / letter 3. Copying those indices makes the letter
-        // transparent and its rectangle opaque when parsed as one font.
-        // Swap the two background indices: the old background becomes transparent,
-        // ink colliding with the new background stays visible, other indices stay intact.
+        // Swap background indices so ink using the target background stays visible.
+        // Leave unrelated color indices intact.
         if (source.bg != base_font.bg) {
             for (data.items[o.* + 16 ..][0 .. n - 16]) |*v| {
                 if (v.* == source.bg) {
