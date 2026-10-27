@@ -26,6 +26,11 @@ pub const Model = struct {
     /// Texture mip levels (`mips[0]` is `texture` itself): the exe picks a level with
     /// MIPLINEAR filtering (0x406d90); without them fine detail shimmers.
     mips: []Image = &.{},
+    /// Each part's own texture (mip levels): chunk 9 sets the texture of the part
+    /// being read (0x44cf3a → 0x44d7b0, part +0x6c), so a model can have several
+    /// (fang: `pasozyt` on the back with `fangtyl`, the body with
+    /// `fang_poprawiany`). Parts without one of their own share `mips`.
+    part_mips: []const []Image = &.{},
     /// Lowest and highest bind-pose points along the mesh Y axis (feet, top of head).
     base_y: f32,
     top_y: f32,
@@ -34,6 +39,20 @@ pub const Model = struct {
     /// Vertex welding for normals (0x4c6e07): for each part vertex, the first vertex
     /// with the same bind-pose coordinates (smooth across UV seams).
     weld: []const []const u32 = &.{},
+    /// `gfx_3d\<name>.2s` exists (chaingun, wave): the exe zeroes the triangles' planes
+    /// (0x44d213 → 0x44bf30 → 0x4c6950), so no back face is skipped and none casts a shadow.
+    two_sided: bool = false,
+
+    /// Mip levels of part `pi`'s texture (none: `mips`).
+    pub fn partMips(self: Model, pi: usize) []Image {
+        return if (pi < self.part_mips.len) self.part_mips[pi] else self.mips;
+    }
+
+    /// Texture of part `pi` (its top mip level).
+    pub fn partTexture(self: Model, pi: usize) ?Image {
+        const m = self.partMips(pi);
+        return if (m.len > 0) m[0] else self.texture;
+    }
 
     /// World units per mesh unit at actorScale = 1: the model's own scale from
     /// chunk 12 (mesh `+0x5c`, multiplied at 0x429311).
@@ -61,6 +80,11 @@ pub const Model = struct {
     }
 };
 
+pub const Overlay = struct {
+    ctx: *anyopaque,
+    get: *const fn (ctx: *anyopaque, name: []const u8) ?[]const u8,
+};
+
 /// Models by `meshFile` name (case-insensitive), loaded on first use.
 pub const Cache = struct {
     gpa: Allocator,
@@ -69,6 +93,8 @@ pub const Cache = struct {
     /// File bytes: model strings point into them.
     arena: std.heap.ArenaAllocator,
     models: std.StringHashMapUnmanaged(?*Model) = .empty,
+    /// Files looked up before the archive (the editor's unsaved models and textures).
+    overlay: ?Overlay = null,
     effects: std.StringHashMapUnmanaged(?*effects_mod.dsc.Dsc) = .empty,
 
     pub fn open(io: Io, gpa: Allocator, dat: Io.Dir) !Cache {
@@ -124,7 +150,9 @@ pub const Cache = struct {
 
     fn read(self: *Cache, comptime fmt: []const u8, args: anytype) ![]u8 {
         var buf: [archive.name_size]u8 = undefined;
-        const e = self.common.find(try std.fmt.bufPrint(&buf, fmt, args)) orelse return error.NotFound;
+        const name = try std.fmt.bufPrint(&buf, fmt, args);
+        if (self.overlay) |o| if (o.get(o.ctx, name)) |d| return self.arena.allocator().dupe(u8, d);
+        const e = self.common.find(name) orelse return error.NotFound;
         return self.common.readAlloc(self.io, self.arena.allocator(), e);
     }
 
@@ -140,6 +168,16 @@ pub const Cache = struct {
         try anim.checkFrames(m.anims, m.frames);
         m.mips = if (self.read("gfx_3d\\textures\\{s}", .{m.mesh.texture})) |d| tex3df.decodeMips(self.gpa, d) catch &.{} else |_| &.{};
         m.texture = if (m.mips.len > 0) m.mips[0] else null;
+        // Other parts' textures, decoded once per name (the cache's arena owns them).
+        const pm = try self.arena.allocator().alloc([]Image, m.mesh.parts.len);
+        for (m.mesh.parts, pm, 0..) |p, *dst, i| {
+            dst.* = m.mips;
+            if (p.texture.len == 0 or std.ascii.eqlIgnoreCase(p.texture, m.mesh.texture)) continue;
+            dst.* = for (m.mesh.parts[0..i], pm[0..i]) |q, prev| {
+                if (std.ascii.eqlIgnoreCase(q.texture, p.texture)) break prev;
+            } else if (self.read("gfx_3d\\textures\\{s}", .{p.texture})) |d| tex3df.decodeMips(self.arena.allocator(), d) catch m.mips else |_| m.mips;
+        }
+        m.part_mips = pm;
         m.local = camera.rotationXYZ(m.mesh.rotation);
         m.base_y = std.math.inf(f32);
         m.top_y = -std.math.inf(f32);
@@ -160,6 +198,9 @@ pub const Cache = struct {
             }
         }
         m.weld = weld;
+        var nb: [archive.name_size]u8 = undefined;
+        const two = try std.fmt.bufPrint(&nb, "gfx_3d\\{s}.2s", .{name});
+        m.two_sided = self.common.find(two) != null or (if (self.overlay) |o| o.get(o.ctx, two) != null else false);
         return m;
     }
 };
@@ -189,6 +230,68 @@ pub fn linkPointOff(model: *const Model, frame: u32, name: []const u8, off: [3]f
     if (model.frames.bones == 0 or h.bone >= model.frames.bones) return null;
     const j = model.mesh.joints[h.bone];
     return skin.transform(model.frames.matrix(frame, h.bone), .{ j[0] + h.params[0] + off[0], j[1] + h.params[1] + off[1], j[2] + h.params[2] + off[2] }, .row);
+}
+
+/// The start pose's bone after an off-place animation (0x4234e2…0x4235b0): translation
+/// minus `s` (x, y, z), then rows (row vectors) times the turn by `s[3]` about the height axis.
+pub fn unshift(m: [12]f32, s: [4]f32) [12]f32 {
+    const c = @cos(s[3]);
+    const sn = @sin(s[3]);
+    var out = m;
+    for (0..3) |k| out[9 + k] -= s[k];
+    for (0..4) |r| {
+        const x = out[r * 3];
+        const z = out[r * 3 + 2];
+        out[r * 3] = x * c + z * sn;
+        out[r * 3 + 2] = z * c - x * sn;
+    }
+    return out;
+}
+
+/// The model with one frame: bone matrices lerped element-wise from frame `from` (or the
+/// drawn pose `from_pose`, one matrix per bone) to `to` by `w` (0x44fd30, the transition
+/// into a new animation).
+/// `shift` takes an off-place animation's end out of the start pose (`unshift`).
+pub fn blended(arena: std.mem.Allocator, model: *const Model, from: u32, from_pose: ?[]const [12]f32, shift: [4]f32, to: u32, w: f32) std.mem.Allocator.Error!*const Model {
+    const out = try arena.create(Model);
+    out.* = model.*;
+    const fr = model.frames;
+    if (fr.bones == 0) return out;
+    const mats = try arena.alloc([12]f32, fr.bones);
+    // A pose of another skeleton (drawn before a morph) isn't lerped: the exe reads past it.
+    const pose = if (from_pose) |p| (if (p.len == fr.bones) p else null) else null;
+    for (mats, 0..) |*m, b| for (m, unshift(if (pose) |p| p[b] else fr.matrix(@min(from, fr.frames - 1), @intCast(b)).*, shift), fr.matrix(@min(to, fr.frames - 1), @intCast(b))) |*d, a, c| {
+        d.* = a * (1 - w) + c * w;
+    };
+    out.frames = .{ .frames = 1, .bones = fr.bones, .matrices = mats, .extra = fr.extra };
+    return out;
+}
+
+test blended {
+    var mats = [_][12]f32{ @splat(0), @splat(9) };
+    var m: Model = undefined;
+    m.frames = .{ .frames = 2, .bones = 1, .matrices = &mats, .extra = &.{} };
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const b = try blended(arena.allocator(), &m, 0, null, @splat(0), 1, 1.0 / 9.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), b.frames.matrix(0, 0)[5], 1e-5);
+    // From a drawn half-blended pose (0x44f9e2): 4.5 → 9 by 1/9 = 5.
+    const half = [_][12]f32{@splat(4.5)};
+    const p = try blended(arena.allocator(), &m, 0, &half, @splat(0), 1, 1.0 / 9.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 5), p.frames.matrix(0, 0)[0], 1e-5);
+    // After an off-place animation the start pose's translation comes back by its shift
+    // (0x4234e2): x 0 − 9 → 9 by 1/9 = −7, rotation untouched.
+    const s = try blended(arena.allocator(), &m, 0, null, .{ 9, 0, 0, 0 }, 1, 1.0 / 9.0);
+    try std.testing.expectApproxEqAbs(@as(f32, -7), s.frames.matrix(0, 0)[9], 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), s.frames.matrix(0, 0)[0], 1e-5);
+}
+
+test unshift {
+    // A bone turned by 90° (row x → z) with the actor now turned by it too: the start pose
+    // comes back to identity (0x47cd30 bone·R), translation (1, 0, 0) − shift turned along.
+    const t = [12]f32{ 0, 0, 1, 0, 1, 0, -1, 0, 0, 3, 0, 0 };
+    const u = unshift(t, .{ 2, 0, 0, std.math.pi / 2.0 });
+    for ([_]f32{ 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -1 }, u) |e, v| try std.testing.expectApproxEqAbs(e, v, 1e-5);
 }
 
 /// Mesh vertex in its local axes (0x44c060 without scale): R·v + shift.

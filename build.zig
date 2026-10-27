@@ -65,10 +65,11 @@ pub fn build(b: *std.Build) void {
         sdl_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/{s}", .{ pre, ext }) });
     } else sdl_mod.linkSystemLibrary("SDL3", .{});
 
-    // FFmpeg for videos (libavformat etc. via pkg-config); without it videos play
-    // through an external ffmpeg program if present.
-    // `-Dffmpeg-prefix=DIR` — our own FFmpeg build (scripts/build-ffmpeg.sh: only ASF,
-    // MS-MPEG4, WMA, MP3) instead of the system one from pkg-config.
+    // FFmpeg for videos and the editor's imports (libavformat etc. via pkg-config,
+    // shared); without it videos play through an external ffmpeg program if present and
+    // the editor cannot import.
+    // `-Dffmpeg-prefix=DIR` — our own FFmpeg build (scripts/build-ffmpeg.sh: all
+    // decoders, the game's encoders, LAME), linked statically, instead of pkg-config.
     const ff_libs = [_][]const u8{ "libavformat", "libavcodec", "libswscale", "libswresample", "libavutil" };
     const ff_prefix = b.option([]const u8, "ffmpeg-prefix", "Own FFmpeg build dir (include/, lib/) instead of pkg-config");
     var ff_found = true;
@@ -81,6 +82,7 @@ pub fn build(b: *std.Build) void {
     const use_ffmpeg = b.option(bool, "ffmpeg", "Decode videos with linked FFmpeg (default: if found)") orelse ff_found;
     const options = b.addOptions();
     options.addOption(bool, "ffmpeg", use_ffmpeg);
+    const options_mod = options.createModule();
     const ffmpeg = b.addTranslateC(.{
         .root_source_file = b.path("src/viewer/ffmpeg.h"),
         .target = target,
@@ -98,18 +100,16 @@ pub fn build(b: *std.Build) void {
         }
     }
     const ffmpeg_mod = ffmpeg.createModule();
-    // Own build by full library path: otherwise the linker finds the system FFmpeg in
+    // Own build by full archive path: otherwise the linker finds the system FFmpeg in
     // the SDL3 directory (Homebrew) first.
-    const dylib_ext = switch (target.result.os.tag) {
-        .macos => "dylib",
-        .windows => "dll.a",
-        else => "so",
-    };
-    if (use_ffmpeg) for (ff_libs) |l| {
+    if (use_ffmpeg) for (ff_libs ++ .{"libmp3lame"}) |l| {
         if (ff_prefix) |pre| {
-            ffmpeg_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/{s}.{s}", .{ pre, l, dylib_ext }) });
-        } else ffmpeg_mod.linkSystemLibrary(l[3..], .{});
+            ffmpeg_mod.addObjectFile(.{ .cwd_relative = b.fmt("{s}/lib/{s}.a", .{ pre, l }) });
+        } else if (!std.mem.eql(u8, l, "libmp3lame")) ffmpeg_mod.linkSystemLibrary(l[3..], .{});
     };
+    // Static libraries' system needs: Windows' bcrypt (libavutil's random seed); the
+    // macOS frameworks libavutil.pc lists go unused without VideoToolbox.
+    if (use_ffmpeg and ff_prefix != null and target.result.os.tag == .windows) ffmpeg_mod.linkSystemLibrary("bcrypt", .{});
 
     // The viewer renders models in software: a debug build is ~10× slower, so
     // without -Dviewer-optimize it (and its engine copy) builds ReleaseFast. Not
@@ -138,28 +138,28 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "opengorky", .module = viewer_lib },
                 .{ .name = "sdl", .module = sdl_mod },
                 .{ .name = "ffmpeg", .module = ffmpeg_mod },
-                .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "build_options", .module = options_mod },
             } else &.{
                 .{ .name = "opengorky", .module = viewer_lib },
                 .{ .name = "sdl", .module = sdl_mod },
-                .{ .name = "build_options", .module = options.createModule() },
+                .{ .name = "build_options", .module = options_mod },
             },
         }),
     });
-    // Own FFmpeg build: shared libraries with @rpath; when run from zig-out they are
-    // looked up in its directory (the scripts/dist-macos.sh and dist-linux.sh packages point next to the binary).
+    // Own SDL3 build: a shared library with @rpath; when run from zig-out it is looked
+    // up in its directory (the scripts/dist-macos.sh and dist-linux.sh packages point next to the binary).
     // `-Dbundle-rpath='$ORIGIN/lib'` — library lookup path in the package (Linux) instead
-    // of the FFmpeg build directory.
-    if (b.option([]const u8, "bundle-rpath", "Viewer rpath in the package instead of the FFmpeg build dir")) |rp| {
+    // of the SDL build directory.
+    const bundle_rpath = b.option([]const u8, "bundle-rpath", "Viewer and editor rpath in the package instead of the SDL build dir");
+    if (bundle_rpath) |rp| {
         viewer.root_module.addRPath(.{ .cwd_relative = rp });
-    } else {
-        if (use_ffmpeg) if (ff_prefix) |pre| viewer.root_module.addRPath(.{ .cwd_relative = b.fmt("{s}/lib", .{pre}) });
-        if (sdl_prefix) |pre| viewer.root_module.addRPath(.{ .cwd_relative = b.fmt("{s}/lib", .{pre}) });
-    }
+    } else if (sdl_prefix) |pre| viewer.root_module.addRPath(.{ .cwd_relative = b.fmt("{s}/lib", .{pre}) });
     // Windows: a GUI program, no console window next to the game (logs go nowhere).
     if (target.result.os.tag == .windows) viewer.subsystem = .windows;
     // Window icon: the project's own picture, embedded in the binary (@embedFile("icon_png")).
     viewer.root_module.addAnonymousImport("icon_png", .{ .root_source_file = b.path("assets/icon-256.png") });
+    // `scaling = adaptive`: the riveted plate beside the 640-wide panel.
+    viewer.root_module.addAnonymousImport("panel_plate_png", .{ .root_source_file = b.path("assets/panel-plate.png") });
     b.installArtifact(viewer);
 
     const run_viewer = b.addRunArtifact(viewer);
@@ -167,17 +167,88 @@ pub fn build(b: *std.Build) void {
     run_viewer.addPassthruArgs();
     b.step("viewer", "Run the resource viewer").dependOn(&run_viewer.step);
 
+    // Level editor: the engine and SDL as in the viewer, UI layout by Clay, text by
+    // stb_truetype with the embedded PT Sans.
+    const ui = b.addTranslateC(.{
+        .root_source_file = b.path("src/editor/ui.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ui.addIncludePath(b.path("third_party/clay"));
+    ui.addIncludePath(b.path("third_party/stb"));
+    const editor = b.addExecutable(.{
+        .name = "opengorky-editor",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/editor/main.zig"),
+            .target = target,
+            .optimize = viewer_optimize,
+            .strip = strip,
+            .imports = &.{
+                .{ .name = "opengorky", .module = viewer_lib },
+                .{ .name = "sdl", .module = sdl_mod },
+                .{ .name = "ui", .module = ui.createModule() },
+            },
+        }),
+    });
+    // The viewer's video player (the Videos page plays them in the centre) and level
+    // composition (the level view's "as in the game" picture): one module, they share
+    // the viewer's media files.
+    const viewer_part = b.createModule(.{ .root_source_file = b.path("src/viewer/level_render.zig"), .target = target, .optimize = viewer_optimize });
+    viewer_part.addImport("opengorky", viewer_lib);
+    viewer_part.addImport("sdl", sdl_mod);
+    viewer_part.addImport("build_options", options_mod);
+    if (use_ffmpeg) viewer_part.addImport("ffmpeg", ffmpeg_mod);
+    editor.root_module.addImport("viewer", viewer_part);
+    // Imports transcode in-process (src/editor/transcode.zig).
+    editor.root_module.addImport("build_options", options_mod);
+    if (use_ffmpeg) editor.root_module.addImport("ffmpeg", ffmpeg_mod);
+    editor.root_module.addIncludePath(b.path("third_party/clay"));
+    editor.root_module.addIncludePath(b.path("third_party/stb"));
+    editor.root_module.addCSourceFile(.{ .file = b.path("third_party/clay/clay.c"), .flags = &.{"-O2"} });
+    editor.root_module.addCSourceFile(.{ .file = b.path("third_party/stb/stb_truetype.c"), .flags = &.{"-O2"} });
+    editor.root_module.addAnonymousImport("font_regular", .{ .root_source_file = b.path("assets/fonts/PTSans-Regular.ttf") });
+    editor.root_module.addAnonymousImport("font_bold", .{ .root_source_file = b.path("assets/fonts/PTSans-Bold.ttf") });
+    editor.root_module.addAnonymousImport("font_italic", .{ .root_source_file = b.path("assets/fonts/PTSans-Italic.ttf") });
+    // Map icons (Lucide, ISC; scripts/editor-icons.swift renders them).
+    for ([_][]const u8{ "facing", "turn_ccw", "turn_cw" }) |n| {
+        editor.root_module.addAnonymousImport(b.fmt("icon_{s}", .{n}), .{ .root_source_file = b.path(b.fmt("assets/icons/{s}.png", .{n})) });
+    }
+    // UI icons (the same script, white, tinted when drawn): names as src/editor/icons.zig's Icon.
+    for ([_][]const u8{ "save", "check", "play", "settings", "history", "search", "folder", "chevron_right", "chevron_down", "map_pin", "swords", "user", "package", "clapperboard", "volume_2", "plus", "file_text", "mouse_pointer_2", "hand", "paintbrush", "pipette", "lightbulb", "square_dashed", "log_out", "crosshair", "camera", "pencil", "code", "message_square", "maximize", "x", "undo_2", "redo_2", "eye", "eye_off", "lock", "lock_open", "layers", "trash_2", "copy", "image", "grid_3x3", "box", "pause", "skip_back", "skip_forward" }) |n| {
+        editor.root_module.addAnonymousImport(b.fmt("ui_{s}", .{n}), .{ .root_source_file = b.path(b.fmt("assets/icons/ui_{s}.png", .{n})) });
+    }
+    // Window icon (assets/icon-editor.png at 256 px), as the viewer's.
+    editor.root_module.addAnonymousImport("icon_png", .{ .root_source_file = b.path("assets/icon-editor-256.png") });
+    // Settings folder and atomic writes, shared with the viewer (std only).
+    editor.root_module.addAnonymousImport("config", .{ .root_source_file = b.path("src/viewer/app/config.zig") });
+    if (bundle_rpath) |rp| {
+        editor.root_module.addRPath(.{ .cwd_relative = rp });
+    } else if (sdl_prefix) |pre| editor.root_module.addRPath(.{ .cwd_relative = b.fmt("{s}/lib", .{pre}) });
+    if (target.result.os.tag == .windows) editor.subsystem = .windows;
+    b.installArtifact(editor);
+
+    const run_editor = b.addRunArtifact(editor);
+    run_editor.step.dependOn(b.getInstallStep());
+    run_editor.addPassthruArgs();
+    b.step("editor", "Run the level editor").dependOn(&run_editor.step);
+
     const lib_tests = b.addRunArtifact(b.addTest(.{ .root_module = lib }));
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&lib_tests.step);
-    // Viewer files without SDL: settings, icon shadow, background pause.
-    for ([_][]const u8{ "src/viewer/app/config.zig", "src/viewer/media/shadow.zig", "src/viewer/app/pause.zig" }) |p| {
-        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path(p),
-            .target = target,
-            .optimize = optimize,
-        }) })).step);
+    // Viewer and editor files without SDL: settings, icon shadow, background pause, level script edits.
+    for ([_][]const u8{ "src/viewer/app/config.zig", "src/viewer/media/shadow.zig", "src/viewer/app/pause.zig", "src/editor/placement.zig", "src/editor/vars.zig", "src/editor/settings.zig", "src/editor/box.zig", "src/editor/search.zig", "src/editor/scenes.zig", "src/editor/code.zig", "src/editor/api.zig", "src/editor/trigger.zig", "src/editor/newlevel.zig", "src/editor/cli.zig", "src/editor/texts.zig", "src/editor/modpack.zig", "src/editor/adjusttext.zig", "src/editor/adjustdoc.zig", "src/editor/savelog.zig", "src/editor/zone.zig", "src/editor/catalog.zig" }) |p| {
+        const m = b.createModule(.{ .root_source_file = b.path(p), .target = target, .optimize = optimize });
+        // The weapon patterns (zone.zig) and the class files (catalog.zig) are the engine's.
+        m.addImport("opengorky", lib);
+        // api.zig's test checks its entries against the builtins the port registers.
+        m.addAnonymousImport("builtins_src", .{ .root_source_file = b.path("src/builtins.zig") });
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
     }
+    // The editor's import transcoding through the linked FFmpeg.
+    const transcode = b.createModule(.{ .root_source_file = b.path("src/editor/transcode.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    transcode.addImport("build_options", options_mod);
+    if (use_ffmpeg) transcode.addImport("ffmpeg", ffmpeg_mod);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = transcode })).step);
     // Unformatted code fails the test (`zig fmt src build.zig` fixes it).
     test_step.dependOn(&b.addFmt(.{ .paths = &.{ b.path("src"), b.path("build.zig") }, .check = true }).step);
 }
@@ -185,7 +256,9 @@ pub fn build(b: *std.Build) void {
 /// Third-party engine decoders (stb_image, dr_libs).
 fn addCDeps(b: *std.Build, m: *std.Build.Module) void {
     m.addIncludePath(b.path("third_party/stb"));
-    m.addCSourceFile(.{ .file = b.path("third_party/stb/stb_image.c"), .flags = &.{"-O2"} });
+    // stb_image_write's JPEG bit buffer shifts signed ints on purpose (well defined on
+    // every compiler it targets); Debug's UB check would trap on it.
+    m.addCSourceFile(.{ .file = b.path("third_party/stb/stb_image.c"), .flags = &.{ "-O2", "-fno-sanitize=shift" } });
     m.addIncludePath(b.path("third_party/dr_libs"));
     m.addCSourceFile(.{ .file = b.path("third_party/dr_libs/dr_libs.c"), .flags = &.{"-O2"} });
 }

@@ -91,8 +91,9 @@ pub const Party = struct {
         return p;
     }
 
-    /// Before the location starts: create heroes it lacks (BT) so init()/restore() see them
-    /// (PlaceActor in battles).
+    /// Before the location starts: create heroes it lacks (BT, Medusa) so init()/restore()
+    /// see them (PlaceActor in battles). A party hero is of the hero class (`hro`; the exe's
+    /// type 6, 0x481d18), so HERO_EnableEnumerate works on him here (0x4c199a).
     pub fn createMissingHeroes(self: *const Party, w: *World) !void {
         for (self.entries) |e| {
             if (!e.hero or w.rt.findObject(e.name) != null) continue;
@@ -101,7 +102,7 @@ pub const Party = struct {
                 try w.classMissing(e.class_file, err);
                 continue;
             };
-            _ = try w.addObject(e.name, cls, .{ .kind = .actor, .hero = true, .fighter = true });
+            _ = try w.addObject(e.name, cls, .{ .kind = .actor, .hero = true, .hro = true, .fighter = true });
         }
     }
 

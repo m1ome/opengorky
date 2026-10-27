@@ -47,6 +47,41 @@ pub fn execActor(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) 
         try enqueue(w, o, .{ .scene_anim = .{ .name = c.arg(1).str(), .count = count, .reverse = c.args.len > 3 and c.arg(3).num() != 0 } });
         return true;
     }
+    if (eq(n, "SYSTEMANIMATION") or eq(n, "USEANIMATION")) {
+        // SYSTEMANIMATION(actor, "logical"[, count]) (0x47741d; count only as an int third
+        // of exactly three) and USEANIMATION(actor, item) (0x4771b6: the item's `useAnim`,
+        // "n/a" if not a string, 0x4ad2c0): mode 4 → 0x428800, command 0x13 with a logical
+        // name, not reversed. Both strings, else a syntax error; a skip runs nothing.
+        if (c.args.len < 2 or c.args[0] != .string or c.args[1] != .string or self.skip) return true;
+        const o = w.actorObject(c.arg(0).str()) orelse return true;
+        var name = c.arg(1).str();
+        var count: u8 = 1;
+        if (eq(n, "USEANIMATION")) {
+            const it = w.rt.findObject(name) orelse return true;
+            if (!world_mod.isItem(it)) return true;
+            const v = it.getVar("useAnim");
+            name = if (v != null and v.?.value == .string) v.?.value.string else "n/a";
+        } else if (c.args.len == 3 and c.args[2] == .number) count = @intCast(std.math.clamp(c.arg(2).int(), 1, 255));
+        try enqueue(w, o, .{ .scene_anim = .{ .name = try w.arena_state.allocator().dupe(u8, name), .count = count, .logical = true } });
+        return true;
+    }
+    if (eq(n, "IDLE_OFF") or eq(n, "IDLE_ON")) {
+        // IDLE_OFF / IDLE_ON(actor) (0x477cca, 0x477e35 → 0x425500): queued command 0x26.
+        if (c.args.len < 1 or c.args[0] != .string) return true;
+        const o = w.actorObject(c.arg(0).str()) orelse return true;
+        try enqueue(w, o, .{ .idle_enable = eq(n, "IDLE_ON") });
+        return true;
+    }
+    if (eq(n, "WALK_ON_SCENERY_TRACK")) {
+        // WALK_ON_SCENERY_TRACK(actor, track, height[, start]) (0x478113): with three
+        // arguments or more, height ·0.01 as a float, then the builtin WalkOnSceneryTrack.
+        // The builtin's checks: actor and track strings (0x4bff8b), an integer start.
+        if (c.args.len <= 2 or c.args[0] != .string or c.args[1] != .string) return true;
+        const o = w.actorObject(c.arg(0).str()) orelse return true;
+        const start: i32 = if (c.args.len > 3 and c.args[3] == .number) c.arg(3).int() else 0;
+        try walk.sceneryTrack(w, o, c.arg(1).str(), num.toF32(c.arg(2).int()) * 0.01, start);
+        return true;
+    }
     if (eq(n, "IDLE_ANIMATION")) {
         const o = w.actorObject(c.arg(0).str()) orelse return true;
         try enqueue(w, o, .{ .idle_anim = c.arg(1).str() });
@@ -117,10 +152,11 @@ pub fn execActor(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) 
         return true;
     }
     if (eq(n, "FAST_ANIMATION")) {
-        // At once, no queue or blend, from the first frame (0x47728c).
+        // At once, no queue or blend (0x477304), from the first frame (0x47728c).
         const o = w.actorObject(c.arg(0).str()) orelse return true;
         const a = world_mod.actorOf(o);
         a.queue.clearRetainingCapacity();
+        a.instant = true;
         a.play(c.arg(1).str(), false, true);
         return true;
     }

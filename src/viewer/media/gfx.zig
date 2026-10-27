@@ -15,6 +15,12 @@ pub fn rgb(comptime r: u8, comptime g: u8, comptime b: u8) [3]f32 {
     return comptime .{ @as(f32, r) / 255.0, @as(f32, g) / 255.0, @as(f32, b) / 255.0 };
 }
 
+/// Colour `name` of adjust.kdt as 0…1 (the shipped file's `default` without it).
+pub fn adjRgb(name: []const u8, default: [3]u8) [3]f32 {
+    const v = og.formats.adjust.getRgb(name, default);
+    return .{ @as(f32, @floatFromInt(v[0])) / 255.0, @as(f32, @floatFromInt(v[1])) / 255.0, @as(f32, @floatFromInt(v[2])) / 255.0 };
+}
+
 /// Atlas source rectangle of a texture-font glyph.
 pub fn glyphSrc(g: og.formats.font.TexGlyph) [4]f32 {
     return .{ og.num.toF32(g.x), og.num.toF32(g.y), og.num.toF32(g.w), og.num.toF32(g.h) };
@@ -44,11 +50,15 @@ pub fn check(ok: bool) SdlError!void {
 }
 
 /// Tile highlight and name-entry cursor pulse (0x45c8a0): min + (max − min)·(sin(phase) + 1)/2,
-/// tile_flash_min/max 0.2/0.4; the phase grows by tile_flash_step 0.15 per logic tick.
+/// tile_flash_min/max 0.2/0.4; the phase grows by tile_flash_speed 0.15 per logic tick.
 pub fn tilePulse(phase: f32) f32 {
-    return 0.2 + 0.2 * (@sin(phase) + 1) * 0.5;
+    const lo = og.formats.adjust.getFloat("tile_flash_min", 0.2);
+    const hi = og.formats.adjust.getFloat("tile_flash_max", 0.4);
+    return lo + (hi - lo) * (@sin(phase) + 1) * 0.5;
 }
-pub const tile_flash_step = 0.15;
+pub fn tileFlashStep() f32 {
+    return og.formats.adjust.getFloat("tile_flash_speed", 0.15);
+}
 
 /// Additive colour; destination alpha unchanged.
 pub fn blendAdd() c.SDL_BlendMode {
@@ -106,6 +116,27 @@ pub fn textureLinear(r: *c.SDL_Renderer, img: Image) SdlError!*c.SDL_Texture {
 /// viewer at frame start.
 /// shortcut: global render setting read by every Frames.texture call; pass it explicitly if a second window is ever needed.
 pub var upscale_k: u32 = 1;
+
+/// `scaling = adaptive`: logical pixels the frame has on each side of the 640×480
+/// middle (whole; 0 — the plain frame). The level world spans the whole frame, the
+/// UI and the mouse keep 640×480 coordinates in the middle. Set at frame start.
+/// shortcut: global like `upscale_k`.
+pub var wide: f32 = 0;
+
+/// `scaling = adaptive-fill`: the world's zoom so a level narrower than the wide
+/// frame fills it (1 — none). Multiplies the game's own zoom.
+pub var fill: f32 = 1;
+
+/// Drawing in the middle 640×480 (UI coordinates).
+pub fn middleView(r: *c.SDL_Renderer) void {
+    if (wide == 0) return;
+    _ = c.SDL_SetRenderViewport(r, &.{ .x = @intFromFloat(wide), .y = 0, .w = 640, .h = 480 });
+}
+
+/// Drawing over the whole frame (the world, full-width fills, the cursor).
+pub fn wholeView(r: *c.SDL_Renderer) void {
+    _ = c.SDL_SetRenderViewport(r, null);
+}
 
 /// Frame set (a background has one frame).
 pub const Frames = struct {

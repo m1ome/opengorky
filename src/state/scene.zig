@@ -36,6 +36,9 @@ pub const State = struct {
     /// The scene used MP3_PLAY: restore the previous music when it ends.
     mp3: bool = false,
     subtitle: ?Subtitle = null,
+    /// The shown line's `#CAM` scroll in a level's own dialogue (StartDialog / DialogInit:
+    /// loader flag +0x218 = 0); a scene's DIALOG_INIT (flag 1) has none.
+    dialog_cam: ?[2]i32 = null,
     /// A line is shown (the DIALOG_DISPLAY wait holds while it is).
     line_open: bool = false,
     /// Pages of the current line (`splitPages`) and the one shown (+0x2c4).
@@ -213,3 +216,8 @@ pub const Runner = struct {
         return null;
     }
 };
+
+/// gui_panorama_height (adjust.kdt, 42): the panorama bar's height.
+pub fn panoramaHeight() f32 {
+    return @floatFromInt(@import("../formats.zig").adjust.getInt("gui_panorama_height", 42));
+}

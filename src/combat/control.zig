@@ -396,7 +396,7 @@ pub fn faceDefault(self: *Battle, w: *World, i: usize, smooth: bool) void {
         }
     }
     const p = near orelse return;
-    set(f, anim.snapAngle(std.math.atan2(p[1] - me[1], p[0] - me[0]), cm.rotation), smooth);
+    set(f, anim.snapAngle(std.math.atan2(@as(f64, p[1]) - me[1], @as(f64, p[0]) - me[0]), cm.rotation), smooth);
 }
 
 /// "Out of range" (lang 514) over hero `o`: an item can't be handed over beyond

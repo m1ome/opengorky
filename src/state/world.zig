@@ -192,7 +192,9 @@ pub const World = struct {
             std.log.warn("{s}: {s}:{d}: {s} ({t})", .{ file, self.rt.diag_file, self.rt.diag.line, self.rt.diag.message, err });
             return null;
         };
-        const obj = try self.addObject(file[0 .. file.len - ext.len], cls, object.nativeFor(ext));
+        var nat = object.nativeFor(ext);
+        nat.from_file = true;
+        const obj = try self.addObject(file[0 .. file.len - ext.len], cls, nat);
         if (nativeOf(obj).kind == .level) self.level = obj;
         return obj;
     }

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const Rand = @import("../crt_rand.zig").Rand;
+const adjust = @import("../formats.zig").adjust;
 
 /// Particle of 0x4ccbe0 (0x2c bytes): `rest` +0x1c, `blend` +0x20 (fade), `shrink` +0x24,
 /// `dead` +0x28.
@@ -16,14 +17,20 @@ const Drop = struct {
 };
 
 /// particle_rest_time (0x6d2aec): particle counter limit.
-pub const particle_rest_time = 40;
+pub fn restTime() u32 {
+    return @intCast(@max(1, adjust.getInt("particle_rest_time", 40)));
+}
 /// particle_blend_start (0x6d2ad4): `blend` from which a particle fades.
-pub const particle_blend_start = 10;
+pub fn blendStart() u32 {
+    return @intCast(@max(0, adjust.getInt("particle_blend_start", 10)));
+}
 
 /// One blood drop unit in world space per aS: 1/0.171 (double 0x50f4a8).
 pub const drop_unit = 1.0 / 0.171;
 /// blood_start_level (adjust.kdt, 0x6b67d4): initial drop height.
-pub const blood_start_level = 51.0;
+pub fn bloodStartLevel() f32 {
+    return adjust.getFloat("blood_start_level", 51);
+}
 
 /// 0x4ccbe0 parameters (adjust.kdt): blood_* for blood (0x4916b7), flare_* for sparks
 /// (0x491ea3); both fan over π·1.2 (0x50a120·0x50a238).
@@ -37,8 +44,16 @@ pub const Particles = struct {
     dsp: f32,
     flare: bool = false,
 
-    pub const blood_drops: Particles = .{ .count = 15, .vz = 4, .dvz = 2, .sp = 1, .dsp = 0.2 };
-    pub const flare_sparks: Particles = .{ .count = 40, .vz = 1.5, .dvz = 3, .sp = 1.4, .dsp = 2, .flare = true };
+    pub fn bloodDrops() Particles {
+        return .{ .count = countOf("blood_particle_count", 15), .size = adjust.getFloat("blood_particle_size", 70), .vz = adjust.getFloat("blood_vspeed", 4), .dvz = adjust.getFloat("blood_vspeed_delta", 2), .sp = adjust.getFloat("blood_speed", 1), .dsp = adjust.getFloat("blood_speed_delta", 0.2) };
+    }
+    pub fn flareSparks() Particles {
+        return .{ .count = countOf("flare_particle_count", 40), .size = adjust.getFloat("flare_particle_size", 70), .vz = adjust.getFloat("flare_vspeed", 1.5), .dvz = adjust.getFloat("flare_vspeed_delta", 3), .sp = adjust.getFloat("flare_speed", 1.4), .dsp = adjust.getFloat("flare_speed_delta", 2), .flare = true };
+    }
+    /// shortcut: at most the 40 drops `Blood` holds, raise the array for a mod that wants more.
+    fn countOf(name: []const u8, default: i32) u8 {
+        return @intCast(std.math.clamp(adjust.getInt(name, default), 0, 40));
+    }
 };
 
 pub const Blood = struct {
@@ -60,14 +75,14 @@ pub const Blood = struct {
             alive = true;
             if (d.blend != 0) {
                 d.blend += 1;
-                if (d.blend >= particle_rest_time) d.dead = true;
+                if (d.blend >= restTime()) d.dead = true;
             }
             if (d.shrink != 0) {
                 d.shrink += bl.shrink_rate;
-                if (d.shrink >= particle_rest_time) d.dead = true;
+                if (d.shrink >= restTime()) d.dead = true;
             }
             if (d.rest != 0) {
-                if (d.rest < particle_rest_time) d.rest += 1 else d.dead = true;
+                if (d.rest < restTime()) d.rest += 1 else d.dead = true;
                 continue;
             }
             for (0..3) |k| d.pos[k] += d.vel[k];
@@ -90,14 +105,14 @@ pub const Blood = struct {
 /// rnd·spread − spread/2); vz = vz0 + rnd·dvz; speed sp = sp0 + rnd·dsp scales vx, vy and
 /// vz (0x4ccd93…0x4ccdbf). rand() order: angle, vz, sp.
 pub fn spawn(rand: *Rand, origin: [3]f32, from: [3]f32, p: Particles) Blood {
-    var bl: Blood = .{ .origin = origin, .drops = undefined, .n = p.count, .flare = p.flare, .shrink_rate = if (p.flare) 3 else 1 };
+    var bl: Blood = .{ .origin = origin, .drops = undefined, .n = p.count, .flare = p.flare, .shrink_rate = if (p.flare) @intCast(@max(1, adjust.getInt("flare_particle_fade_speed", 3))) else 1 };
     const base = std.math.atan2(from[1] - origin[1], from[0] - origin[0]);
     for (bl.drops[0..p.count]) |*d| {
         const a = base + rand.pct() * p.spread - p.spread * 0.5;
         const vz = p.vz + rand.pct() * p.dvz;
         const sp = p.sp + rand.pct() * p.dsp;
         d.* = .{
-            .pos = .{ 0, 0, blood_start_level },
+            .pos = .{ 0, 0, bloodStartLevel() },
             .vel = .{ @cos(a) * sp, @sin(a) * sp, vz * sp },
             .size = p.size,
             .shrink = @intFromBool(p.flare),
@@ -108,14 +123,14 @@ pub fn spawn(rand: *Rand, origin: [3]f32, from: [3]f32, p: Particles) Blood {
 
 test "spawn: rand() order angle → vz → sp, vz ×sp, height blood_start_level" {
     var r: Rand = .{};
-    const bl = spawn(&r, .{ 0, 0, 0 }, .{ 1, 0, 0 }, .blood_drops);
+    const bl = spawn(&r, .{ 0, 0, 0 }, .{ 1, 0, 0 }, .bloodDrops());
     var q: Rand = .{};
     const a = q.pct() * std.math.pi * 1.2 - std.math.pi * 1.2 * 0.5;
     const vz = 4 + q.pct() * 2;
     const sp = 1 + q.pct() * 0.2;
     const d = bl.drops[0];
     try std.testing.expectEqual(@as(u8, 15), bl.n);
-    try std.testing.expectEqual(@as(f32, blood_start_level), d.pos[2]);
+    try std.testing.expectEqual(bloodStartLevel(), d.pos[2]);
     try std.testing.expectApproxEqAbs(@cos(a) * sp, d.vel[0], 1e-6);
     try std.testing.expectApproxEqAbs(vz * sp, d.vel[2], 1e-6);
 }

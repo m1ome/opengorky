@@ -72,7 +72,11 @@ fn checkLevelFile(gpa: Allocator, ext: LevelExt, data: []const u8) !void {
         },
         .wm, .wm2 => {
             var m = try lf.parseWalkMap(gpa, data);
-            m.deinit(gpa);
+            defer m.deinit(gpa);
+            // The editor writes walk maps back: the same bytes.
+            const back = try lf.encodeWalkMap(gpa, m);
+            defer gpa.free(back);
+            if (!std.mem.eql(u8, back, data)) return error.WalkMapRewriteDiffers;
         },
         .cm => {
             var m = try lf.parseCombatMap(gpa, data);
@@ -107,7 +111,11 @@ fn checkOne(gpa: Allocator, kind: resource.Kind, data: []const u8) !void {
         },
         .background => {
             var img = try og.formats.background.decode(gpa, data);
-            img.deinit(gpa);
+            defer img.deinit(gpa);
+            // The editor writes backgrounds back: the same bytes.
+            const back = try og.formats.background.encode(gpa, img);
+            defer gpa.free(back);
+            if (!std.mem.eql(u8, back, data)) return error.BackgroundRewriteDiffers;
         },
         .jpeg => {
             var img = try og.formats.jpeg.decode(gpa, data);
@@ -115,7 +123,13 @@ fn checkOne(gpa: Allocator, kind: resource.Kind, data: []const u8) !void {
         },
         .zbuffer => {
             var z = try og.formats.zbuffer.decode(gpa, data);
-            z.deinit(gpa);
+            defer z.deinit(gpa);
+            // Written back by the editor: its own runs, the same depths.
+            const back = try og.formats.zbuffer.encode(gpa, z);
+            defer gpa.free(back);
+            var z2 = try og.formats.zbuffer.decode(gpa, back);
+            defer z2.deinit(gpa);
+            if (!std.mem.eql(u16, z.depth, z2.depth)) return error.ZBufferRewriteDiffers;
         },
         .audio => {
             var s = try og.audio.decode.decode(gpa, data);

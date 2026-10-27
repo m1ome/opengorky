@@ -72,9 +72,10 @@ pub fn drawGrid(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
     const v = self.fx_view orelse return;
     const tex = v.namedTexture("combatGrid.3df") orelse return;
     _ = c.SDL_SetTextureBlendMode(tex, v.modes[1]);
-    const wx: f32 = 0.2;
-    const wy: f32 = 0.2 * cm.cell_size[0] / cm.cell_size[1];
-    const color = [3]f32{ 32, 48, 32 };
+    const wx = og.formats.adjust.getFloat("grid_width", 0.2);
+    const wy = wx * cm.cell_size[0] / cm.cell_size[1];
+    const gc = og.formats.adjust.getRgb("grid_color", .{ 32, 48, 32 });
+    const color = [3]f32{ @floatFromInt(gc[0]), @floatFromInt(gc[1]), @floatFromInt(gc[2]) };
     for (self.grid_edges) |e| {
         if (e.level <= 0) continue;
         var rgb: [3]f32 = undefined;

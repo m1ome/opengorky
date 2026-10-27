@@ -73,6 +73,61 @@ pub fn decode(gpa: Allocator, bytes: []const u8) (Error || Allocator.Error)!ZBuf
     return .{ .width = width, .height = height, .depth = depth };
 }
 
+/// `zbc1` of `z`: runs of equal values (`10`), the rest literal (`11`), a 0 word at the end.
+pub fn encode(gpa: Allocator, z: ZBuffer) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, magic);
+    var hb: [8]u8 = undefined;
+    std.mem.writeInt(u32, hb[0..4], z.width, .little);
+    std.mem.writeInt(u32, hb[4..8], z.height, .little);
+    try out.appendSlice(gpa, &hb);
+    const put = struct {
+        fn w(o: *std.ArrayList(u8), g: Allocator, v: u16) Allocator.Error!void {
+            var b: [2]u8 = undefined;
+            std.mem.writeInt(u16, &b, v, .little);
+            try o.appendSlice(g, &b);
+        }
+    }.w;
+    const d = z.depth;
+    var i: usize = 0;
+    var lit: usize = i; // start of the pending literal run
+    while (i < d.len) {
+        var run: usize = 1;
+        while (i + run < d.len and run < 0x3fff and d[i + run] == d[i]) run += 1;
+        if (run >= 3) {
+            while (lit < i) {
+                const n = @min(i - lit, 0x3fff);
+                try put(&out, gpa, 0xc000 | @as(u16, @intCast(n)));
+                for (d[lit..][0..n]) |v| try put(&out, gpa, v);
+                lit += n;
+            }
+            try put(&out, gpa, 0x8000 | @as(u16, @intCast(run)));
+            try put(&out, gpa, d[i]);
+            i += run;
+            lit = i;
+        } else i += run;
+    }
+    while (lit < d.len) {
+        const n = @min(d.len - lit, 0x3fff);
+        try put(&out, gpa, 0xc000 | @as(u16, @intCast(n)));
+        for (d[lit..][0..n]) |v| try put(&out, gpa, v);
+        lit += n;
+    }
+    try put(&out, gpa, 0);
+    return out.toOwnedSlice(gpa);
+}
+
+test "encode: runs and literals read back" {
+    const gpa = std.testing.allocator;
+    var vals = [_]u16{ 1, 2, 7, 7, 7, 7, 3, 9, 9, 5 };
+    const bytes = try encode(gpa, .{ .width = 5, .height = 2, .depth = &vals });
+    defer gpa.free(bytes);
+    var z = try decode(gpa, bytes);
+    defer z.deinit(gpa);
+    try std.testing.expectEqualSlices(u16, &vals, z.depth);
+}
+
 test decode {
     const gpa = std.testing.allocator;
     var buf: [12 + 2 * 7]u8 = undefined;

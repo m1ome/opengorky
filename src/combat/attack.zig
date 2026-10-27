@@ -5,6 +5,7 @@ const fields = @import("../fields.zig");
 const control = @import("control.zig");
 const states = @import("states.zig");
 const strike = @import("strike.zig");
+const bombs = @import("bombs.zig");
 const battle = @import("../battle.zig").battle;
 const anim = @import("anim.zig");
 const Battle = battle.Battle;
@@ -47,8 +48,9 @@ pub fn stepPending(self: *Battle, w: *World) !void {
             // after attack_headnail_delay1 (30), the right delay2 (5) later; the hit after
             // delay3 (8), at tick wait + 1.
             if (fields.nameId(self.fighters.items[at.who].obj) == 118) {
-                if (at.tick == 30 + 1) anim.spinLink(w, self.fighters.items[at.who].obj, "pila lewa");
-                if (at.tick == 35 + 1) anim.spinLink(w, self.fighters.items[at.who].obj, "pila prawa");
+                const d1: i64 = @import("../formats.zig").adjust.getInt("attack_headnail_delay1", 30);
+                if (at.tick == d1 + 1) anim.spinLink(w, self.fighters.items[at.who].obj, "pila lewa");
+                if (at.tick == d1 + 5 + 1) anim.spinLink(w, self.fighters.items[at.who].obj, "pila prawa");
             }
             // Flash before the hit (Garcia, Schizo's gas) on the same countdown as the hit
             // (hit at tick wait + 1).
@@ -56,13 +58,17 @@ pub fn stepPending(self: *Battle, w: *World) !void {
                 at.pre = null;
                 if (w.combat_map) |cm| fx.hits.preFlash(w, self.fighters.items[at.who].obj, generic.fxId(at.weapon), cm.tileCenter(at.aim.tile, 1));
             };
-            // Victim lift onto the link point (state 3, 0x496f1f): attach, its idle is "delirium".
+            // Victim lift onto the link point (state 3, 0x496f1f): attach, its idle is the raw
+            // name "delirium" (command 0x27 copies it, no RegisterAnimation lookup: the class's
+            // "delirium_up" mesh animation, not its logical "delirium" = "deliriumA"); the
+            // animation start swaps it for "deliriumA" for nameID 24 and 29 (0x423355).
             if (at.lift) |lf_| if (at.tick == lf_.bind_at) if (at.victim) |vi| {
                 const v = &self.fighters.items[vi];
                 if (v.alive()) {
                     world_mod.actorOf(self.fighters.items[at.who].obj).bind = .{ .victim = v.obj, .link = lf_.link, .z = lf_.z * w.actorScale() };
                     const va = world_mod.actorOf(v.*.obj);
-                    va.forced_idle = va.resolve("delirium");
+                    const id = fields.nameId(v.obj);
+                    va.forced_idle = if (id == 24 or id == 29) "deliriumA" else "delirium";
                     va.play(va.forced_idle.?, true, false);
                 }
             };
@@ -87,7 +93,10 @@ pub fn stepPending(self: *Battle, w: *World) !void {
             if (!at.hit1) {
                 if (at.flight != 0 and w.effects.projectileAlive(at.flight)) return;
                 at.hit1 = true;
-                try strike.resolveAttack(self, w, at.who, at.weapon, at.aim, &at.strike, false);
+                if (at.flight != 0 and w.effects.projectileLying(at.flight))
+                    try bombs.placeCharge(self, .{ .proj = at.flight, .who = at.who, .weapon = at.weapon, .aim = at.aim, .strike = at.strike, .left = 0 })
+                else
+                    try strike.resolveAttack(self, w, at.who, at.weapon, at.aim, &at.strike, false);
                 // Second hit without a projectile (Headnail, 0x48a72b: the right saw
                 // attack_headnail_delay4 + delay5 after the first): damage again.
                 if (at.flight == 0 and at.second > 0) at.melee2_in = at.second;
@@ -144,6 +153,7 @@ pub fn stepPending(self: *Battle, w: *World) !void {
                     p.anim = oa.anim;
                     anim.walkStraight(w, f, ob.tile);
                     ha.walk_anim = "push_walk";
+                    ha.instant = true; // command 0x18 after push_start (0x48d999)
                     ha.play(ha.resolve("push_walk"), true, false);
                     anim.walkStraight(w, ob, p.to);
                     // In the exe the obstacle follows the hero attached to him (command 0x2d(5,
@@ -177,6 +187,7 @@ pub fn stepPending(self: *Battle, w: *World) !void {
         },
         .settle => {
             if (self.blasts.items.len > 0) return;
+            for (w.effects.flames.items) |fl| if (fl.holdsAttack()) return;
             for (self.fighters.items) |f| if (world_mod.actorOf(f.obj).busy()) return;
             self.pending = .none;
             // Counter-attack done: the enemy turn continues.

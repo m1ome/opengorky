@@ -3,7 +3,6 @@
 const std = @import("std");
 const state_groups = @import("../state.zig").groups;
 const fields = @import("../fields.zig");
-const object = @import("../script.zig").object;
 const world = @import("../state.zig").world;
 const World = world.World;
 
@@ -47,6 +46,7 @@ pub fn leave(self: *World, next: []const u8) !void {
         a.forced_idle = null;
         a.scene_walk = null;
         a.pickIdle(rand);
+        a.anim_hold = 0; // 0x427c5f: +0x1c = 1, the blend is over
     }
     self.shadows.clearRetainingCapacity();
     const l = self.level orelse return;

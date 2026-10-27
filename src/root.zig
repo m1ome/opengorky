@@ -18,8 +18,13 @@ pub const inventory = @import("inventory.zig");
 pub const world = @import("world.zig");
 pub const scene = @import("scene.zig");
 pub const combat = @import("combat.zig");
+pub const fx = @import("fx.zig");
 pub const save = @import("save.zig");
+pub const modcheck = @import("modcheck.zig");
 pub const game = @import("game.zig");
+/// Headless runs over game.tick (they use game.zig, so they are not part of it).
+pub const scene_check = @import("game/scene_check.zig");
+pub const logic_trace = @import("game/logic_trace.zig");
 pub const console = @import("console.zig");
 
 test {

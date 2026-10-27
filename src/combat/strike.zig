@@ -117,6 +117,7 @@ pub fn reactAgain(self: *Battle, w: *World, who: u16) void {
     const t = &self.fighters.items[v];
     if (!t.alive()) return;
     const a = world.actorOf(t.*.obj);
+    a.instant = true; // 0x491add
     a.play(a.resolve("hit"), false, true);
     fx.blood.onDamage(w, t.obj, self.fighters.items[who].obj);
 }
@@ -380,6 +381,7 @@ fn hitVictim(self: *Battle, w: *World, who: u16, wpn: *Object, v: u16, st: Strik
         try hurtBonus(self, w, v, d, side_bonus);
     } else if (!immune and !monitor and t.alive()) {
         const ta = world.actorOf(t.*.obj);
+        ta.instant = true; // 0x491add
         ta.play(ta.resolve("hit"), false, true);
     }
     // Reaction by weapon nameID (0x491c76): shocker and dischargers (0x491c91: 52,
@@ -544,7 +546,8 @@ fn hurtBonus(self: *Battle, w: *World, v: u16, dmg: i32, bonus: i32) !void {
         };
         if (t.side == .enemy) if (w.level) |l| l.setInt("killedEnemies", l.getInt("killedEnemies") + 1);
     } else if (Class.of(t.obj) != .monitor) {
-        // Hit reaction (0x491920); monitors have none (0x4bcff0).
+        // Hit reaction (0x491920) without the blend (0x491add); monitors have none (0x4bcff0).
+        a.instant = true;
         a.play(a.resolve("hit"), false, true);
     }
 }

@@ -18,6 +18,25 @@ const patterns = @import("../battle.zig").patterns;
 const inventory = @import("../inventory.zig");
 const Tile = @import("../battle.zig").grid.Tile;
 
+/// Console `win`. The exe has no such cheat, so an honest end: the 04__city_mfd Invisible
+/// never dies but leaves (0x4985fb → 0x49839f: not a death); every other enemy dies as in
+/// a fight (strike.hurt: grid, death, corpse, killedEnemies); the usual victory follows
+/// (turns.checkEnd).
+pub fn debugWin(self: *Battle, w: *World) !void {
+    if (self.invisibleMfd()) |i| {
+        const f = &self.fighters.items[i];
+        if (!self.invisible_leaving) self.grid().remove(f.tile, f.size);
+        self.invisible_leaving = false;
+        f.dead = true;
+        World.nativeOf(f.obj).deleted = true;
+        f.obj.enabled = false;
+    }
+    for (0..self.fighters.items.len) |i| {
+        const f = self.fighters.items[i];
+        if (f.side == .enemy and f.alive()) try strike.hurt(self, w, @intCast(i), @max(1, f.hp()));
+    }
+}
+
 /// Player turn forced before the enemies finished appearing (console on the first
 /// battle tick): finish the walk-in at once, otherwise an enemy left off-grid is
 /// not a fighter yet alive, and the battle never ends.

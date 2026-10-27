@@ -182,13 +182,15 @@ fn drawStatsWindow(self: *Gui, r: *c.SDL_Renderer, w: *og.state.world.World, str
             return if (st) |x| x.get(id) orelse fb else fb;
         }
     }.get;
-    // Joan McFadden (nameID 24): "special skill: / healing +15%".
+    // Joan McFadden (nameID 24): one text "%s:\n%s +15%%" (0x52ac28) whose width
+    // (0x47b5e0) sums every character of both lines, so it starts at X + 225 − that
+    // (0x4aff35…0x4affc3): a long Russian line still fits the window.
     if (og.fields.nameId(hero) == 24) {
-        const l1 = std.fmt.bufPrint(&b, "{s}:", .{s(strings, 574, "special skill")}) catch "";
-        gui_mod.textShadow(f2, t.*, xi + 225 - @as(i32, @intCast(f2.measure(l1))), yi + 32, l1, gui_mod.text_light);
-        var b2: [64]u8 = undefined;
-        const l2 = std.fmt.bufPrint(&b2, "{s} +15%", .{s(strings, 575, "healing")}) catch "";
-        gui_mod.textShadow(f2, t.*, xi + 225 - @as(i32, @intCast(f2.measure(l1))), yi + 32 + @as(i32, @intCast(f2.height + 1)), l2, gui_mod.text_light);
+        const both = std.fmt.bufPrint(&b, "{s}:\n{s} +15%", .{ s(strings, 574, "special skill"), s(strings, 575, "healing") }) catch "";
+        const x0 = xi + 225 - @as(i32, @intCast(f2.measure(both)));
+        const nl = std.mem.indexOfScalar(u8, both, '\n') orelse both.len;
+        gui_mod.textShadow(f2, t.*, x0, yi + 32, both[0..nl], gui_mod.text_light);
+        if (nl < both.len) gui_mod.textShadow(f2, t.*, x0, yi + 32 + @as(i32, @intCast(f2.height + 1)), both[nl + 1 ..], gui_mod.text_light);
     }
     const lv = std.fmt.bufPrint(&b, "{s}: {d}", .{ s(strings, 360, "LEVEL"), hero.getInt("level") }) catch "";
     gui_mod.textShadow(f3, t.*, xi + 110, yi + 74, lv, gui_mod.text_dim);

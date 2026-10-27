@@ -93,13 +93,17 @@ pub fn drawBattleHud(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, gui: 
             st_len += piece.len;
         };
         if (st_len > 0) {
-            // 3d_msg font, scale 0.5, centred at the figure top + 8, additive.
+            // 3d_msg font, scale 0.5, additive, centred on the model's screen box
+            // (+0x64…+0x70) at its top + fighter_stunned_level (0x4dcaa0).
+            const sb = world_mod.actorOf(f.obj).screen_box orelse .{ head.x, head.y, head.x, head.y };
+            const sx = (sb[0] + sb[2]) / 2 - scroll[0];
+            const sy = sb[1] + og.num.toF32(og.formats.adjust.getInt("fighter_stunned_level", 8)) - scroll[1];
             if (gui) |g| {
-                try gui_battle.msgTextBlend(g, r, st_buf[0..st_len], head.x - scroll[0], y + 8, 0.5, gfx.rgb(200, 60, 20), 1, gfx.blendAdd());
+                try gui_battle.msgTextBlend(g, r, st_buf[0..st_len], sx, sy, 0.5, gfx.rgb(200, 60, 20), 1, gfx.blendAdd());
             } else {
                 const label = std.fmt.bufPrintSentinel(&buf, "{s}", .{st_buf[0..st_len]}, 0) catch continue;
                 try gfx.check(c.SDL_SetRenderDrawColor(r, 200, 60, 20, 255));
-                try gfx.check(c.SDL_RenderDebugText(r, head.x - scroll[0] - og.num.toF32(st_len) * 4, y + 8, label));
+                try gfx.check(c.SDL_RenderDebugText(r, sx - og.num.toF32(st_len) * 4, sy, label));
             }
         }
     }

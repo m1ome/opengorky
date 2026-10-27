@@ -344,6 +344,12 @@ pub const EffectsView = struct {
         const col = color(rs.blend, a, rgb);
         const corners = billboardCorners(f.cam, pos, half);
         const uv = [4][2]f32{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } };
+        self.quad(f, tex, corners, uv, col);
+    }
+
+    /// A textured quad: world corners `corners` (in order around it), texture
+    /// coordinates `uv`, colour `col`.
+    fn quad(self: *EffectsView, f: Frame, tex: *c.SDL_Texture, corners: [4][3]f32, uv: [4][2]f32, col: [4]f32) void {
         var v: [4]c.SDL_Vertex = undefined;
         for (corners, uv, &v) |p, t, *out| {
             const q = f.cam.project(p);
@@ -368,13 +374,7 @@ pub const EffectsView = struct {
         };
         const uv = [4][2]f32{ .{ t0, 0 }, .{ t1, 0 }, .{ t1, 1 }, .{ t0, 1 } };
         const col = [4]f32{ k, k, k, 1 };
-        var v: [4]c.SDL_Vertex = undefined;
-        for (corners, uv, &v) |p, t, *out| {
-            const q = f.cam.project(p);
-            out.* = vertex(q.x - f.scroll[0], q.y - f.scroll[1], t[0], t[1], col);
-        }
-        const idx = [6]c_int{ 0, 1, 2, 0, 2, 3 };
-        _ = c.SDL_RenderGeometry(self.renderer, tex, &v, 4, &idx, 6);
+        self.quad(f, tex, corners, uv, col);
     }
 
     /// Horizontal "screen right" axis in the world (for camera-facing strips).

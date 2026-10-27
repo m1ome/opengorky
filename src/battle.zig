@@ -9,6 +9,7 @@ pub const grid = @import("battle/grid.zig");
 pub const immunity = @import("battle/immunity.zig");
 pub const obj = @import("battle/obj.zig");
 pub const patterns = @import("battle/patterns.zig");
+pub const report = @import("battle/report.zig");
 pub const rules = @import("battle/rules.zig");
 pub const weapon_class = @import("battle/weapon_class.zig");
 

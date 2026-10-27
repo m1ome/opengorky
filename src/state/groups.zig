@@ -47,6 +47,9 @@ pub const Flow = struct {
     want_prev_level: bool = false,
     /// The ending scene reached GUI_CREDITS / GUI_MENU: go to the menu.
     game_over: bool = false,
+    /// GUI_GAMEOVER (0x45b3b0 → 0x454350, the battle defeat's screen): ticks since; at 90
+    /// the "gameover" music and the "Repeat Battle" choice.
+    defeat_ticks: ?u32 = null,
     /// Requested location change (LEVEL_Load).
     pending_level: ?[]const u8 = null,
     /// LEVEL_LoadAB: after switching, call AfterBattle(this location) on the new one.

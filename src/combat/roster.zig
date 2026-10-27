@@ -116,7 +116,7 @@ pub fn init(w: *World) !Battle {
         if (World.nativeOf(o).fight.bomb_timer == null or World.nativeOf(o).deleted) continue;
         const t = cm.tileOf(fields.pos(o), 1);
         if (!b.grid().inside(t) or b.fighters.items.len == max_fighters) continue;
-        try b.bombs.append(w.gpa, .{ .obj = o, .tile = t, .fighter = try devices.addDevice(&b, o, t), .large = true });
+        try b.bombs.append(w.gpa, .{ .obj = o, .tile = t, .fighter = try devices.addDevice(&b, o, t), .large = true, .seq = b.nextSeq() });
     }
     // Between battles weapons are always recharged.
     for (w.rt.objects.items) |o| {

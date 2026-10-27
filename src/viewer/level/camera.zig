@@ -11,6 +11,7 @@ const screen_h = viewer_mod.screen_h;
 const cx = og.state.world.screen_cx;
 const cy = og.state.world.screen_cy;
 const level = @import("../level.zig");
+const gfx = @import("../media/gfx.zig");
 
 /// Size of what is on screen (for scrolling).
 fn contentSize(self: *Viewer) [2]u32 {
@@ -32,12 +33,18 @@ pub fn cameraTick(self: *Viewer, l: *LevelView) void {
             self.zoom_rate = @abs(z - self.zoom) * speed;
         }
     }
+    // ZOOM (0x478220 → 0x420030): rate as DOLLY's zoom, or zoom_speed (0x5927f4).
+    if (w.out.zoom) |z| {
+        w.out.zoom = null;
+        self.zoom_target = z.to;
+        self.zoom_rate = if (z.time) |t| (if (t != 0) @abs(z.to - self.zoom) / (t * 0.3) else 1) else og.formats.adjust.getFloat("zoom_speed", 0.1);
+    }
     // Scene end (0x4790ad): zoom back to 1 at zoom_speed 0.1, after the same tick's
     // DOLLY (the scene's last command must not leave 2×).
     if (w.out.zoom_reset) {
         w.out.zoom_reset = false;
         self.zoom_target = 1;
-        self.zoom_rate = 0.1;
+        self.zoom_rate = og.formats.adjust.getFloat("zoom_speed", 0.1);
     }
     if (w.out.camera_snap) {
         w.out.camera_snap = false;
@@ -73,7 +80,13 @@ pub fn cameraTick(self: *Viewer, l: *LevelView) void {
         }
     } else if (w.scene.cutscene or w.scene.subtitle != null) {
         self.dolly = null;
-        if (l.partyGoal()) |g| glide(self, g);
+        // A combat level's own dialogue (the window's tick 0x45a050, +0x218 = 0): a
+        // line's `#CAM x,y` is the scroll it glides to by 1/6 (0x45c220) — the meeting
+        // with Medusa in 03__museum_corner shows her, then the fighters.
+        const cam = if (w.battle != null and w.scene.subtitle != null) w.scene.dialog_cam else null;
+        if (cam) |xy| {
+            for (0..2) |k| self.scroll[k] = @trunc(self.scroll[k] + (og.num.toF32(xy[k]) - self.scroll[k]) * (1.0 / 6.0));
+        } else if (l.partyGoal()) |g| glide(self, g);
     } else if (w.battle != null) {
         self.dolly = null;
         // Hero select (0x455490 → 0x4c9100): from the current scroll to the hero's
@@ -116,8 +129,8 @@ pub fn cameraTick(self: *Viewer, l: *LevelView) void {
         } else if (w.battle.?.cameraActor()) |o| if (l.actorGoal(o)) |g| glide(self, g);
         if (!self.shot_run) {
             const m = self.mouse;
-            if (m[0] < 15) self.scroll[0] -= (15 - m[0]) * 1.7;
-            if (m[0] > 625) self.scroll[0] += (m[0] - 625) * 1.7;
+            if (m[0] < 15 - gfx.wide) self.scroll[0] -= (15 - gfx.wide - m[0]) * 1.7;
+            if (m[0] > 625 + gfx.wide) self.scroll[0] += (m[0] - 625 - gfx.wide) * 1.7;
             if (m[1] < 10) self.scroll[1] -= (10 - m[1]) * 1.7;
             if (m[1] > 470) self.scroll[1] += (m[1] - 470) * 1.7;
         }
@@ -126,8 +139,8 @@ pub fn cameraTick(self: *Viewer, l: *LevelView) void {
         if (l.follow) if (l.cameraGoal()) |g| glide(self, g);
         if (!self.shot_run) {
             const m = self.mouse;
-            if (m[0] < 20) self.scroll[0] -= 25;
-            if (m[0] > 620) self.scroll[0] += 25;
+            if (m[0] < 20 - gfx.wide) self.scroll[0] -= 25;
+            if (m[0] > 620 + gfx.wide) self.scroll[0] += 25;
             if (m[1] < 15) self.scroll[1] -= 25;
             if (m[1] > 465) self.scroll[1] += 25;
         }
@@ -151,12 +164,17 @@ pub fn worldMouse(self: *Viewer) [2]f32 {
     return unzoom(self, self.mouse);
 }
 fn unzoom(self: *Viewer, pt: [2]f32) [2]f32 {
-    return .{ (pt[0] - cx) / self.zoom + cx, (pt[1] - cy) / self.zoom + cy };
+    const z = viewZoom(self);
+    return .{ (pt[0] - cx) / z + cx, (pt[1] - cy) / z + cy };
 }
 /// Screen point → background coordinates: unzoomed (0x451630) plus scroll.
 pub fn bgMouse(self: *Viewer, pt: [2]f32) [2]f32 {
     const u = unzoom(self, pt);
     return .{ u[0] + self.scroll[0], u[1] + self.scroll[1] };
+}
+/// The world's zoom on screen: the game's (scenes, attacks) times `scaling = adaptive`'s.
+pub fn viewZoom(self: *Viewer) f32 {
+    return self.zoom * gfx.fill;
 }
 /// Toward the target by 1/6 per tick, truncating (ftol).
 fn glide(self: *Viewer, g: [2]f32) void {
@@ -166,13 +184,18 @@ fn glide(self: *Viewer, g: [2]f32) void {
 /// visible another 50/zoom down.
 fn clampScroll(self: *Viewer, l: *LevelView) void {
     const size = l.size();
-    const mx = cx - cx / self.zoom;
-    const my = cy - cy / self.zoom;
+    const z = viewZoom(self);
+    // Half the world width on screen (the wide frame's, zoomed): the view keeps on the background.
+    const half = (cx + gfx.wide) / z;
+    const my = cy - cy / z;
     const panel_shown = self.gui != null and !self.gui.?.panel_hidden and !l.world.scene.cutscene and !l.world.scene.panorama;
-    const panel: f32 = if (panel_shown) 50 / self.zoom else 0;
-    const max_x = @max(-mx, og.num.toF32(size[0]) - screen_w + mx);
+    // `scaling = adaptive` too, so the bottom cells clear the panel (its sides: `drawPanelSides`).
+    const panel: f32 = if (panel_shown) 50 / z else 0;
+    // A wide frame (`scaling = adaptive`) keeps its sides on the background too.
+    const min_x = half - cx;
+    const max_x = @max(min_x, og.num.toF32(size[0]) - cx - half);
     const max_y = @max(-my, og.num.toF32(size[1]) - screen_h + my + panel);
-    self.scroll[0] = std.math.clamp(self.scroll[0], -mx, max_x);
+    self.scroll[0] = std.math.clamp(self.scroll[0], min_x, max_x);
     self.scroll[1] = std.math.clamp(self.scroll[1], -my, max_y);
 }
 /// Wheel step: touchpads and high-precision wheels send many small events, and

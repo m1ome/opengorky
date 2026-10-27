@@ -46,7 +46,7 @@ pub fn drawBattleTiles(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mou
     const ticks = self.world.ticks;
     // The exe doesn't fill fire and gas cells: fire is the "flame" (0x4a66a0), gas
     // the "gas2" cloud (0x4a95d0), both in level_effects.
-    const pulse = gfx.tilePulse(gfx.tile_flash_step * og.num.toF32(ticks));
+    const pulse = gfx.tilePulse(gfx.tileFlashStep() * og.num.toF32(ticks));
     const cursor = if (self.window_top) null else tileAt(self, mouse_bg);
     // Hovered fighter: alive, visible, not an invisible monster.
     var hv: ?u16 = null;
@@ -82,7 +82,7 @@ pub fn drawBattleTiles(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mou
             const t: og.battle.grid.Tile = .{ f.tile[0] + d[0], f.tile[1] + d[1] };
             if (t[0] < 0 or t[1] < 0 or t[0] >= cm.width or t[1] >= cm.height) continue;
             if (cm.blocked[og.battle.grid.tileIndex(cm.width, t)]) continue;
-            try fillTile(self, r, cm, scroll, t, .{ 178.0 / 255.0, 178.0 / 255.0, 50.0 / 255.0, pulse });
+            try fillTile(self, r, cm, scroll, t, rgbA(gfx.adjRgb("cftTilePGCross", .{ 178, 178, 50 }), pulse));
         }
     };
     if (turn and !self.world.mouse.aim and !b.facing_mode and !self.cross_mode) {
@@ -90,15 +90,15 @@ pub fn drawBattleTiles(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mou
         var shown = false;
         if (self.hover) |k| if (self.hover_ticks > 15 and b.fighters.items[k].side == .enemy) {
             if (enemyReach(self, b, k)) |reach| {
-                try fillReach(self, r, cm, scroll, b, reach, b.fighters.items[k].size, rgbA(green, pulse));
+                try fillReach(self, r, cm, scroll, b, reach, b.fighters.items[k].size, rgbA(gfx.adjRgb("cftEnemyWalkRange", .{ 20, 140, 50 }), pulse));
                 shown = true;
             }
         };
-        if (!shown) if (me) |f| try fillReach(self, r, cm, scroll, b, b.reach_left, f.size, rgbA(green, pulse));
+        if (!shown) if (me) |f| try fillReach(self, r, cm, scroll, b, b.reach_left, f.size, rgbA(gfx.adjRgb("cftPlayerWalkRange", .{ 20, 140, 50 }), pulse));
     }
     if (turn and self.world.mouse.aim) {
         for (control_mod.targetList(b)) |aim| {
-            try fillTile(self, r, cm, scroll, aim.tile, rgbA(red, og.num.toF32(aim.pct) * 0.01 * pulse));
+            try fillTile(self, r, cm, scroll, aim.tile, rgbA(gfx.adjRgb("cftAttackRange", .{ 210, 76, 76 }), og.num.toF32(aim.pct) * 0.01 * pulse));
         }
         if (cursor) |t| if (me) |f| if (f.weapon) |wpn| {
             for (control_mod.targetList(b)) |aim| if (aim.tile[0] == t[0] and aim.tile[1] == t[1]) {
@@ -114,9 +114,9 @@ pub fn drawBattleTiles(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mou
         const a = pulse + 0.1;
         const f = b.fighters.items[sh.who];
         switch (sh.stage) {
-            .walk => try fillReach(self, r, cm, scroll, b, b.ai_reach, f.size, rgbA(green, a)),
+            .walk => try fillReach(self, r, cm, scroll, b, b.ai_reach, f.size, rgbA(gfx.adjRgb("cftAiWalkRange", .{ 20, 140, 50 }), a)),
             .area, .effect => {
-                for (og.combat.ai_turn.aiTargets(b)) |aim| try fillTile(self, r, cm, scroll, aim.tile, rgbA(red, a));
+                for (og.combat.ai_turn.aiTargets(b)) |aim| try fillTile(self, r, cm, scroll, aim.tile, rgbA(gfx.adjRgb("cftAiAttackRange", .{ 210, 76, 76 }), a));
                 try fillFootprint(self, r, cm, scroll, f, a);
                 if (sh.stage == .effect) if (b.ai_plan.weapon) |wpn| try fillEffect(self, r, cm, scroll, b, wpn, b.ai_plan.aim, a);
             },
@@ -126,30 +126,26 @@ pub fn drawBattleTiles(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mou
     if (self.hover) |k| try fillFootprint(self, r, cm, scroll, b.fighters.items[k], pulse);
     // Frame of the cell under the cursor, on walkable `.cm` cells.
     if (cursor) |t| if (!cm.blocked[og.battle.grid.tileIndex(cm.width, t)]) {
-        try frameTile(self, r, cm, scroll, t, .{ 1, 128.0 / 255.0, 0, 1 });
+        try frameTile(self, r, cm, scroll, t, rgbA(gfx.adjRgb("cftFreeTileFrame", .{ 255, 128, 0 }), 1));
     };
     // Selected hero marker (0x47d9a0, 0x47de60): two "snakes" of sel.3df sparks
     // run around the hero's cell.
     if (turn) if (me) |f| if (f.alive()) try selSnakes(self, cm, scroll, f.tile);
 }
-const green = gfx.rgb(20, 140, 50);
-const red = gfx.rgb(210, 76, 76);
-const yellow = gfx.rgb(210, 210, 0);
-const blue = gfx.rgb(50, 50, 178);
 fn rgbA(rgb: [3]f32, a: f32) [4]f32 {
     return .{ rgb[0], rgb[1], rgb[2], a };
 }
 /// Fighter cells (size×size) in blue.
 fn fillFootprint(self: *LevelView, r: *c.SDL_Renderer, cm: lf.CombatMap, scroll: [2]f32, f: og.battle.fighter.Fighter, a: f32) !void {
     for (0..f.size) |dy| for (0..f.size) |dx| {
-        try fillTile(self, r, cm, scroll, .{ f.tile[0] + @as(i32, @intCast(dx)), f.tile[1] + @as(i32, @intCast(dy)) }, rgbA(blue, a));
+        try fillTile(self, r, cm, scroll, .{ f.tile[0] + @as(i32, @intCast(dx)), f.tile[1] + @as(i32, @intCast(dy)) }, rgbA(gfx.adjRgb("cftFighterArea", .{ 50, 50, 178 }), a));
     };
 }
 /// Hit cells of weapon `wpn` at aim `aim` in yellow.
 fn fillEffect(self: *LevelView, r: *c.SDL_Renderer, cm: lf.CombatMap, scroll: [2]f32, b: *battle_mod.Battle, wpn: *og.script.object.Object, aim: og.battle.grid.Target, a: f32) !void {
     const pat = og.battle.weapon_class.pattern(wpn) orelse return;
     var buf: [128]og.battle.grid.Tile = undefined;
-    for (og.battle.grid.effectTiles(b.grid(), pat, aim, &buf)) |et| try fillTile(self, r, cm, scroll, et, rgbA(yellow, a));
+    for (og.battle.grid.effectTiles(b.grid(), pat, aim, &buf)) |et| try fillTile(self, r, cm, scroll, et, rgbA(gfx.adjRgb("cftEffectRange", .{ 210, 210, 0 }), a));
 }
 /// Reach fill: a size×size footprint at each cell with remaining ≥ 0, no cell
 /// filled twice.
@@ -224,7 +220,7 @@ fn selSnakes(self: *LevelView, cm: lf.CombatMap, scroll: [2]f32, t: og.battle.gr
     };
     const as = self.world.actorScale();
     const ticks: f32 = @floatFromInt(self.world.ticks);
-    const col = [4]f32{ 130.0 / 255.0, 55.0 / 255.0, 20.0 / 255.0, 1 };
+    const col = rgbA(gfx.adjRgb("cftSelectedTileFX", .{ 130, 55, 20 }), 1);
     for ([_]f32{ 0, 2 }) |start_edge| for (1..26) |k| {
         const kf: f32 = @floatFromInt(k);
         const p = (ticks + kf - 1) * 0.08 + start_edge;

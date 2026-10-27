@@ -24,6 +24,7 @@ pub const flame = @import("effects/flame.zig");
 pub const projectile = @import("effects/projectile.zig");
 pub const beam = @import("effects/beam.zig");
 pub const light = @import("effects/light.zig");
+pub const batch = @import("effects/batch.zig");
 const retain = @import("effects/retain.zig").retain;
 
 pub const Effects = struct {
@@ -80,8 +81,21 @@ pub const Effects = struct {
     }
 
     pub fn projectileAlive(self: *Effects, id: u32) bool {
-        for (self.projectiles.items) |p| if (p.id == id) return !p.done;
+        for (self.projectiles.items) |p| if (p.id == id) return !p.done and !p.lying;
         return false;
+    }
+
+    /// The projectile arrived and lies as a charge (Incubus ball).
+    pub fn projectileLying(self: *Effects, id: u32) bool {
+        for (self.projectiles.items) |p| if (p.id == id) return p.lying;
+        return false;
+    }
+
+    /// Remove a projectile (a charge that blew up).
+    pub fn endProjectile(self: *Effects, id: u32) void {
+        for (self.projectiles.items) |*p| if (p.id == id) {
+            p.done = true;
+        };
     }
 
     pub fn addLight(self: *Effects, gpa: Allocator, l: light.Light) void {
@@ -124,5 +138,6 @@ pub const Effects = struct {
 test {
     _ = dsc;
     _ = particles;
+    _ = flame;
     _ = @import("effects/retain.zig");
 }

@@ -23,7 +23,7 @@ pub const Canvas = struct {
     rec_gpa: ?Allocator = null,
     /// Owner of the `recorded` list (freed in deinit).
     list_gpa: ?Allocator = null,
-    /// Canvas rectangle drawn since the last `clearDirty` (pixels or depth):
+    /// Canvas rectangle drawn since `dirty` was last reset (pixels or depth):
     /// clearing and texture upload touch only it.
     dirty: Rect = .empty,
     /// Same per part (`beginRegion` — each model, shadows): the texture upload covers
@@ -134,6 +134,10 @@ pub const Canvas = struct {
         /// Texture mip levels (`[0]` is the texture itself): one level per triangle by the
         /// texel/pixel area ratio, nearest (MIPLINEAR, 0x406d90).
         mips: []const Image = &.{},
+        /// Depth test only: the triangle counts this fraction of its depth closer
+        /// (ground items over the background fit); the true depth is written, so
+        /// models drawn later sort against it.
+        test_bias: f32 = 0,
     };
 
     /// Start recording triangles (`gpa` for the list; memory is reused).
@@ -375,6 +379,7 @@ pub const Canvas = struct {
                 }
                 inside = true;
                 const z = w0 * p[0][2] + w1 * p[1][2] + w2 * p[2][2];
+                const zt = z - sh.test_bias * @abs(z);
                 const idx = row + ux;
                 var dz = self.depth[idx];
                 if (dz != dz) if (base) |b| {
@@ -382,8 +387,8 @@ pub const Canvas = struct {
                 };
                 // Passes over an already drawn surface of the same model use a tolerance.
                 if (pass == .add) {
-                    if (z > dz + @abs(dz) * 1e-4 + 1e-3) continue;
-                } else if (z >= dz) continue;
+                    if (zt > dz + @abs(dz) * 1e-4 + 1e-3) continue;
+                } else if (zt >= dz) continue;
                 var color: [4]u8 = undefined;
                 if (pass != .depth) color = shade(pass == .add, tex_l, uv, c0, c1, c2, sh, w0, w1, w2);
                 var pa = a;
@@ -501,6 +506,21 @@ test "triangle covers pixels and respects depth" {
     // A far triangle does not cover a near one.
     c.triangle(.{ .{ 0, 0, 9 }, .{ 4, 0, 9 }, .{ 0, 4, 9 } }, uv, null, gray(0.5));
     try std.testing.expectEqual(200, c.img.pixels[0]);
+}
+
+test "test bias passes the depth test but writes the true depth" {
+    const gpa = std.testing.allocator;
+    var c = try Canvas.init(gpa, 4, 4, .{ 0, 0, 0, 255 });
+    defer c.deinit(gpa);
+    @memset(c.depth, 10); // background slightly in front of the item
+    const uv: [3][2]f32 = .{ .{ 0, 0 }, .{ 0, 0 }, .{ 0, 0 } };
+    const tri = [3][3]f32{ .{ 0, 0, 10.2 }, .{ 4, 0, 10.2 }, .{ 0, 4, 10.2 } };
+    c.triangleShaded(tri, uv, null, gray(1), .{ .test_bias = 0.03 });
+    try std.testing.expectEqual(200, c.img.pixels[0]);
+    try std.testing.expectApproxEqAbs(10.2, c.depth[0], 1e-4);
+    // An actor just in front of the item's true depth covers it.
+    c.triangle(.{ .{ 0, 0, 10.1 }, .{ 4, 0, 10.1 }, .{ 0, 4, 10.1 } }, uv, null, gray(0.5));
+    try std.testing.expectEqual(100, c.img.pixels[0]);
 }
 
 test "alpha blends and additive pass keeps depth" {

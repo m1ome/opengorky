@@ -22,7 +22,7 @@ const Header = struct {
     levels: u32 = 1,
 };
 
-fn parseHeader(bytes: []const u8) Error!Header {
+pub fn parseHeader(bytes: []const u8) Error!Header {
     var lines: [4][]const u8 = undefined;
     var pos: usize = 0;
     for (&lines) |*l| {
@@ -217,6 +217,70 @@ test "p8 texture" {
     try std.testing.expectEqual(2, img.width);
     try std.testing.expectEqual(1, img.height);
     try std.testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0xff, 0xff, 0, 0, 0xff }, img.pixels);
+}
+
+/// An `argb4444` texture with every mip level (box-filtered) from an RGBA image
+/// whose sides are powers of two up to 256, aspect at most 8:1.
+pub fn encodeArgb4444(gpa: Allocator, img: Image) (Allocator.Error || error{BadSize})![]u8 {
+    const w = img.width;
+    const h = img.height;
+    if (!std.math.isPowerOfTwo(w) or !std.math.isPowerOfTwo(h) or @max(w, h) > 256 or @max(w, h) / @min(w, h) > 8) return error.BadSize;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.print(gpa, "3df v1.1\nargb4444\nlod range: 1 {d}\naspect ratio: {d} {d}\n", .{ @max(w, h), @max(1, w / h), @max(1, h / w) });
+    var level = try Image.init(gpa, w, h);
+    defer level.deinit(gpa);
+    @memcpy(level.pixels, img.pixels);
+    while (true) {
+        for (0..@as(usize, level.width) * level.height) |i| {
+            const p = level.pixels[i * 4 ..][0..4];
+            const v: u16 = @as(u16, p[3] >> 4) << 12 | @as(u16, p[0] >> 4) << 8 | @as(u16, p[1] >> 4) << 4 | p[2] >> 4;
+            var b: [2]u8 = undefined;
+            std.mem.writeInt(u16, &b, v, .big);
+            try out.appendSlice(gpa, &b);
+        }
+        if (level.width == 1 and level.height == 1) break;
+        const next = try half(gpa, level);
+        level.deinit(gpa);
+        level = next;
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+/// Half size (at least 1): each pixel the mean of its 2×2 (or 2×1) block.
+pub fn half(gpa: Allocator, img: Image) Allocator.Error!Image {
+    const w = @max(1, img.width / 2);
+    const h = @max(1, img.height / 2);
+    var out = try Image.init(gpa, w, h);
+    const sx: usize = img.width / w;
+    const sy: usize = img.height / h;
+    for (0..h) |y| for (0..w) |x| for (0..4) |ch| {
+        var sum: u32 = 0;
+        for (0..sy) |dy| for (0..sx) |dx| {
+            sum += img.pixels[((y * sy + dy) * img.width + x * sx + dx) * 4 + ch];
+        };
+        out.pixels[(y * w + x) * 4 + ch] = @intCast(sum / (sx * sy));
+    };
+    return out;
+}
+
+test "encode argb4444: mips read back" {
+    const gpa = std.testing.allocator;
+    var img = try Image.init(gpa, 4, 2);
+    defer img.deinit(gpa);
+    @memset(img.pixels, 0xff);
+    img.pixels[0..4].* = .{ 0x11, 0x22, 0x33, 0x44 };
+    const bytes = try encodeArgb4444(gpa, img);
+    defer gpa.free(bytes);
+    const mips = try decodeMips(gpa, bytes);
+    defer {
+        for (mips) |*m| m.deinit(gpa);
+        gpa.free(mips);
+    }
+    try std.testing.expectEqual(3, mips.len);
+    try std.testing.expectEqual(4, mips[0].width);
+    try std.testing.expectEqualSlices(u8, &.{ 0x11, 0x22, 0x33, 0x44 }, mips[0].pixels[0..4]);
+    try std.testing.expectEqual(1, mips[2].width);
 }
 
 test "argb4444 big-endian and crlf header" {

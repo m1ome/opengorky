@@ -1,4 +1,4 @@
-/* FFmpeg for avi\*.asf videos (MS-MPEG4 v1/v3, WMA v1, MP3). */
+/* FFmpeg: avi\*.asf videos (viewer) and the editor's imports (src/editor/transcode.zig). */
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libswscale/swscale.h>
@@ -6,3 +6,4 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/audio_fifo.h>

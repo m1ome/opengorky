@@ -1,8 +1,11 @@
 #!/bin/sh
-# macOS package: zig-out/dist/OpenGorky.app and OpenGorky-macos-<arch>.zip.
-# Contains: icon assets/icon.png (AppIcon.icns), a universal (arm64 + x86_64) viewer
-# (ReleaseFast, no debug info), our SDL3 build (scripts/build-sdl3.sh) and a minimal
-# FFmpeg (scripts/build-ffmpeg.sh, both architectures, lipo'd) in Contents/Frameworks, licenses.
+# macOS packages: zig-out/dist/OpenGorky.app and OpenGorky-macos-<arch>.zip; the level
+# editor separately: OpenGorky Editor.app and OpenGorky-Editor-macos-<arch>.zip (SDL3; it
+# asks for the game folder in its settings).
+# Contains: icon assets/icon.png (AppIcon.icns; the editor's assets/icon-editor.png), a universal (arm64 + x86_64) viewer
+# (ReleaseFast, no debug info) with FFmpeg and LAME linked statically
+# (scripts/build-ffmpeg.sh, per architecture; LGPL — see licenses/README.txt), our SDL3
+# build (scripts/build-sdl3.sh) in Contents/Frameworks, licenses.
 # No game files inside: the first launch asks for the game dir (dat/, avi/,
 # adjust.kdt) and stores it as game_path in ~/Library/Application Support/OpenGorky/opengorky.cfg.
 #
@@ -22,30 +25,23 @@ SDL="$ROOT/zig-out/sdl3/prefix"
 SDL_LIB="$SDL/lib/libSDL3.0.dylib"
 SDL_SRC="$ROOT/zig-out/sdl3/src"
 
-# FFmpeg: one build per architecture, then universal libraries via lipo.
-FFLIBS="libavcodec.63 libavformat.63 libavutil.61 libswresample.7 libswscale.10"
-FF="$ROOT/zig-out/ffmpeg-universal/prefix"
-rm -rf "$FF"; mkdir -p "$FF/lib"
+# FFmpeg (static, linked into the binaries): one build per architecture.
 for a in $ARCHS; do
-  [ -f "$ROOT/zig-out/ffmpeg-$a/prefix/lib/libavcodec.dylib" ] || ARCH=$a sh scripts/build-ffmpeg.sh "$ROOT/zig-out/ffmpeg-$a"
+  [ -f "$ROOT/zig-out/ffmpeg-$a/prefix/lib/libavcodec.a" ] || ARCH=$a sh scripts/build-ffmpeg.sh "$ROOT/zig-out/ffmpeg-$a"
 done
 FIRST=$(echo $ARCHS | awk '{print $1}')
-cp -R "$ROOT/zig-out/ffmpeg-$FIRST/prefix/include" "$FF/include"
-for l in $FFLIBS; do
-  set --
-  for a in $ARCHS; do set -- "$@" "$ROOT/zig-out/ffmpeg-$a/prefix/lib/$l.dylib"; done
-  lipo -create "$@" -output "$FF/lib/$l.dylib"
-  ln -sf "$l.dylib" "$FF/lib/${l%.*}.dylib"
-done
+FFSRC="$ROOT/zig-out/ffmpeg-$FIRST"
 
 # Viewer per architecture, then one universal binary.
 BUILD="$ROOT/zig-out/dist-build"
 set --
+EDITORS=
 for a in $ARCHS; do
   t=$a; [ "$a" = arm64 ] && t=aarch64
   zig build -Dtarget=$t-macos -Doptimize=ReleaseSafe -Dviewer-optimize="$OPT" -Dstrip=true \
-    -Dffmpeg-prefix="$FF" -Dsdl-prefix="$SDL" -Dbundle-rpath=@executable_path/../Frameworks -p "$BUILD-$a"
+    -Dffmpeg-prefix="$ROOT/zig-out/ffmpeg-$a/prefix" -Dsdl-prefix="$SDL" -Dbundle-rpath=@executable_path/../Frameworks -p "$BUILD-$a"
   set -- "$@" "$BUILD-$a/bin/opengorky-viewer"
+  EDITORS="$EDITORS $BUILD-$a/bin/opengorky-editor"
 done
 
 APP="$ROOT/zig-out/dist/OpenGorky.app"
@@ -54,17 +50,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resourc
 BIN="$APP/Contents/MacOS/opengorky-viewer"
 lipo -create "$@" -output "$BIN"
 
-# Libraries: real files under their LC_LOAD_DYLIB names (@rpath/<name>).
+# SDL3: the real file under its LC_LOAD_DYLIB name (@rpath/<name>).
 cp -L "$SDL_LIB" "$APP/Contents/Frameworks/libSDL3.0.dylib"
-for l in $FFLIBS; do
-  cp -L "$FF/lib/$l.dylib" "$APP/Contents/Frameworks/$l.dylib"
-done
 chmod u+w "$APP"/Contents/Frameworks/*.dylib
 install_name_tool -id @rpath/libSDL3.0.dylib "$APP/Contents/Frameworks/libSDL3.0.dylib"
 SDL_REF=$(otool -L "$BIN" | awk '/libSDL3/{print $1; exit}')
 install_name_tool -change "$SDL_REF" @rpath/libSDL3.0.dylib "$BIN"
-# No other external (non-system) libraries allowed.
-if otool -L "$BIN" "$APP"/Contents/Frameworks/*.dylib | grep -E '^\s+/(opt|usr/local)/'; then
+# No other external (non-system) libraries allowed; FFmpeg is inside the binary.
+if otool -L "$BIN" "$APP"/Contents/Frameworks/*.dylib | grep -E '^\s+/(opt|usr/local)/|libav|libsw|libmp3lame'; then
   echo "references to libraries outside the package" >&2; exit 1
 fi
 # The binary rpath is only the bundled Frameworks (-Dbundle-rpath).
@@ -90,14 +83,17 @@ exec "$HERE/opengorky-viewer" "$GAME" --play "$@"
 EOF
 chmod +x "$APP/Contents/MacOS/OpenGorky"
 
-# Bundle icon from assets/icon.png (1024×1024): all sizes 16…512 @1x/@2x.
-SET="$ROOT/zig-out/dist-build/AppIcon.iconset"
-rm -rf "$SET"; mkdir -p "$SET"
-for n in 16 32 128 256 512; do
-  sips -z $n $n assets/icon.png --out "$SET/icon_${n}x${n}.png" >/dev/null
-  sips -z $((n * 2)) $((n * 2)) assets/icon.png --out "$SET/icon_${n}x${n}@2x.png" >/dev/null
-done
-iconutil -c icns "$SET" -o "$APP/Contents/Resources/AppIcon.icns"
+# Bundle icon from a square PNG (1024 px and up): all sizes 16…512 @1x/@2x.
+icns() {
+  SET="$ROOT/zig-out/dist-build/AppIcon.iconset"
+  rm -rf "$SET"; mkdir -p "$SET"
+  for n in 16 32 128 256 512; do
+    sips -z $n $n "$1" --out "$SET/icon_${n}x${n}.png" >/dev/null
+    sips -z $((n * 2)) $((n * 2)) "$1" --out "$SET/icon_${n}x${n}@2x.png" >/dev/null
+  done
+  iconutil -c icns "$SET" -o "$2"
+}
+icns assets/icon.png "$APP/Contents/Resources/AppIcon.icns"
 
 VER=$(git describe --always --dirty 2>/dev/null || echo dev)
 cat > "$APP/Contents/Info.plist" <<EOF
@@ -122,11 +118,17 @@ EOF
 
 cp LICENSE "$APP/Contents/Resources/licenses/OpenGorky-MIT.txt"
 cp "$SDL_SRC/LICENSE.txt" "$APP/Contents/Resources/licenses/SDL3-zlib.txt"
-cp "$ROOT/zig-out/ffmpeg-$FIRST/src/COPYING.LGPLv2.1" "$APP/Contents/Resources/licenses/FFmpeg-LGPL-2.1.txt"
+cp "$FFSRC/src/COPYING.LGPLv2.1" "$APP/Contents/Resources/licenses/FFmpeg-LGPL-2.1.txt"
+cp "$FFSRC/lame/COPYING" "$APP/Contents/Resources/licenses/LAME-LGPL-2.txt"
+FFVER=$(cat "$FFSRC/src/VERSION" 2>/dev/null || echo 9.0.1)
+SRCURL=$(git remote get-url origin 2>/dev/null | sed 's/\.git$//' || true)
 cat > "$APP/Contents/Resources/licenses/README.txt" <<EOF
-OpenGorky — MIT. SDL3 — zlib. FFmpeg $(sed -n 's/^\([0-9.]*\).*/\1/p' "$ROOT/zig-out/ffmpeg-$FIRST/src/VERSION" 2>/dev/null || true) — LGPL 2.1+,
-shared libraries in Contents/Frameworks (replaceable with your own build;
-sources: https://ffmpeg.org/releases/, options — scripts/build-ffmpeg.sh).
+OpenGorky — MIT. SDL3 — zlib (Contents/Frameworks).
+FFmpeg $FFVER — LGPL 2.1+, and LAME 3.100 — LGPL 2+: linked statically into the program.
+To relink it with your own (modified) FFmpeg or LAME: the program's complete source is the
+relinkable form — ${SRCURL:-the OpenGorky repository}, version $VER; build the libraries with
+scripts/build-ffmpeg.sh (or your own), then zig build -Dffmpeg-prefix=<build>/prefix (README).
+Library sources: https://ffmpeg.org/releases/ffmpeg-$FFVER.tar.xz, https://lame.sourceforge.io/.
 EOF
 
 # Signature. SIGN_IDENTITY="Developer ID Application: …" signs with hardened runtime
@@ -137,24 +139,76 @@ if [ -n "$SIGN_IDENTITY" ]; then
 else
   SIGN="--force -s"; SIGN_IDENTITY=-
 fi
-for f in "$APP"/Contents/Frameworks/*.dylib "$BIN" "$APP/Contents/MacOS/OpenGorky"; do
-  codesign $SIGN "$SIGN_IDENTITY" "$f"
-done
-codesign $SIGN "$SIGN_IDENTITY" "$APP"
-codesign --verify --deep --strict "$APP"
+# sign_app APP FILE… — the files inside, then the bundle.
+sign_app() {
+  app=$1; shift
+  for f in "$@"; do codesign $SIGN "$SIGN_IDENTITY" "$f"; done
+  codesign $SIGN "$SIGN_IDENTITY" "$app"
+  codesign --verify --deep --strict "$app"
+}
+# zip_app APP ZIP — the zip; notarized (NOTARY_PROFILE: a keychain profile from
+# `xcrun notarytool store-credentials`): the ticket stapled to the app and the zip rebuilt.
+zip_app() {
+  (cd "$(dirname "$1")" && ditto -c -k --keepParent "$(basename "$1")" "$2")
+  if [ -n "$NOTARY_PROFILE" ]; then
+    xcrun notarytool submit "$2" --keychain-profile "$NOTARY_PROFILE" --wait
+    xcrun stapler staple "$1"
+    rm -f "$2"
+    (cd "$(dirname "$1")" && ditto -c -k --keepParent "$(basename "$1")" "$2")
+    spctl --assess --type execute -v "$1"
+  fi
+  du -sh "$1" "$2"
+}
 
-ARCH=$(lipo -archs "$BIN")
+sign_app "$APP" "$APP"/Contents/Frameworks/*.dylib "$BIN" "$APP/Contents/MacOS/OpenGorky"
 lipo -info "$BIN" "$APP"/Contents/Frameworks/*.dylib
-ZIP="$ROOT/zig-out/dist/OpenGorky-macos-$(echo "$ARCH" | tr ' ' '-').zip"
-(cd "$ROOT/zig-out/dist" && ditto -c -k --keepParent OpenGorky.app "$ZIP")
+zip_app "$APP" "$ROOT/zig-out/dist/OpenGorky-macos-$(lipo -archs "$BIN" | tr ' ' '-').zip"
 
-# Notarization: NOTARY_PROFILE is a keychain profile from
-# `xcrun notarytool store-credentials`. The ticket is stapled to the app and the zip rebuilt.
-if [ -n "$NOTARY_PROFILE" ]; then
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
-  xcrun stapler staple "$APP"
-  rm -f "$ZIP"
-  (cd "$ROOT/zig-out/dist" && ditto -c -k --keepParent OpenGorky.app "$ZIP")
-  spctl --assess --type execute -v "$APP"
+# Level editor: its own bundle, the binary is the executable (FFmpeg inside: it plays
+# videos and converts imports); SDL3 beside it.
+EAPP="$ROOT/zig-out/dist/OpenGorky Editor.app"
+rm -rf "$EAPP" "$ROOT"/zig-out/dist/OpenGorky-Editor-macos-*.zip
+mkdir -p "$EAPP/Contents/MacOS" "$EAPP/Contents/Frameworks" "$EAPP/Contents/Resources/licenses"
+EBIN="$EAPP/Contents/MacOS/opengorky-editor"
+# shellcheck disable=SC2086
+lipo -create $EDITORS -output "$EBIN"
+cp "$APP"/Contents/Frameworks/*.dylib "$EAPP/Contents/Frameworks/"
+SDL_REF=$(otool -L "$EBIN" | awk '/libSDL3/{print $1; exit}')
+install_name_tool -change "$SDL_REF" @rpath/libSDL3.0.dylib "$EBIN"
+if otool -L "$EBIN" | grep -E '^\s+/(opt|usr/local)/|libav|libsw|libmp3lame'; then
+  echo "editor: references to libraries outside the package" >&2; exit 1
 fi
-du -sh "$APP" "$ZIP"
+if otool -l "$EBIN" | awk '/LC_RPATH/{r=1} r&&/ path /{print $2; r=0}' | grep -v '^@executable_path/../Frameworks$'; then
+  echo "editor: unexpected rpath in the binary" >&2; exit 1
+fi
+icns assets/icon-editor.png "$EAPP/Contents/Resources/AppIcon.icns"
+cat > "$EAPP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>OpenGorky Editor</string>
+  <key>CFBundleDisplayName</key><string>OpenGorky Editor</string>
+  <key>CFBundleIdentifier</key><string>io.github.opengorky.editor</string>
+  <key>CFBundleExecutable</key><string>opengorky-editor</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$VER</string>
+  <key>CFBundleVersion</key><string>$VER</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+</dict>
+</plist>
+EOF
+cp LICENSE "$EAPP/Contents/Resources/licenses/OpenGorky-MIT.txt"
+cp "$SDL_SRC/LICENSE.txt" "$EAPP/Contents/Resources/licenses/SDL3-zlib.txt"
+cp third_party/clay/LICENSE.md "$EAPP/Contents/Resources/licenses/Clay-zlib.txt"
+cp assets/fonts/OFL.txt "$EAPP/Contents/Resources/licenses/PTSans-OFL.txt"
+cp assets/icons/LICENSE-lucide.txt "$EAPP/Contents/Resources/licenses/Lucide-ISC.txt"
+cp "$APP/Contents/Resources/licenses/FFmpeg-LGPL-2.1.txt" "$APP/Contents/Resources/licenses/LAME-LGPL-2.txt" "$EAPP/Contents/Resources/licenses/"
+{ echo "Clay — zlib. stb_truetype — public domain. PT Sans — SIL OFL 1.1. Lucide icons — ISC."
+  cat "$APP/Contents/Resources/licenses/README.txt"; } > "$EAPP/Contents/Resources/licenses/README.txt"
+sign_app "$EAPP" "$EAPP"/Contents/Frameworks/*.dylib "$EBIN"
+lipo -info "$EBIN"
+zip_app "$EAPP" "$ROOT/zig-out/dist/OpenGorky-Editor-macos-$(lipo -archs "$EBIN" | tr ' ' '-').zip"

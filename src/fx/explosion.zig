@@ -2,6 +2,7 @@
 
 const World = @import("../state.zig").world.World;
 const effects = @import("../effects.zig");
+const adjust = @import("../formats.zig").adjust;
 
 /// Explosion (0x4d0610) at `p`: "explosion1", step explosion_speed (1)·0.5, on the
 /// next tick (Delayer 0x4cd7b0 with delay 0). On a battle level (0x696ea0) 700·aS
@@ -12,11 +13,12 @@ const effects = @import("../effects.zig");
 pub fn explosion(w: *World, p: [3]f32) void {
     const as = w.actorScale();
     const combat = w.isCombat();
+    const scale = adjust.getFloat("explosion_scale", 1000);
     bitmap(w, .{
         .effect = "explosion1",
         .pos = .{ p[0], p[1], if (combat) p[2] + 700 * as else p[2] },
-        .size = if (combat) 1000 else 1500,
-        .step = 0.5,
+        .size = if (combat) scale else scale * 1.5,
+        .step = adjust.getFloat("explosion_speed", 1) * 0.5,
         .delay = 1,
     });
 }

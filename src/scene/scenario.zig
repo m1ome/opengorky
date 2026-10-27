@@ -4,10 +4,9 @@
 //! DIALOG_DISPLAY, FADE_*). Meanings come from their use in scenes and dialog
 //! comments, checked against the exe (addresses on the commands).
 
+const panoramaHeight = @import("../state.zig").scene.panoramaHeight;
 const std = @import("std");
-const num = @import("../num.zig");
 const fields = @import("../fields.zig");
-const inventory = @import("../inventory.zig");
 const scriptlet = @import("../formats.zig").scriptlet;
 const dialog = @import("../formats.zig").dialog;
 const world_mod = @import("../state.zig").world;
@@ -71,7 +70,7 @@ pub fn step(self: *Runner, w: *World) !void {
             w.scene.panorama_h -= 2;
             if (w.scene.panorama_h >= 0) return;
             w.scene.panorama = false;
-            w.scene.panorama_h = 42;
+            w.scene.panorama_h = panoramaHeight();
             self.wait = .none;
         },
         .goindown => |g| {
@@ -126,7 +125,7 @@ fn exec(self: *Runner, w: *World, raw: scriptlet.Command) !void {
 /// Command order of the exe table (0x4763f0): a name matches by the command's
 /// length (strncmp), first match wins. So the glued typo
 /// `FADE_INDIALOG_DISPLAY(0)` in `port-deska.scr` runs as FADE_IN.
-const exe_order = [_][]const u8{
+pub const exe_order = [_][]const u8{
     "PLACEHEROES",    "WALKTO",       "PLACE",            "NO_SKIP",        "ACTOR_MORPH",    "EARTHQUAKE",         "MP3_PLAY",            "MP3_FADE",
     "GUI_DISABLE",    "GUI_CREDITS",  "GUI_MENU",         "GUI_ENABLE",     "GUI_CUTSCENE",   "GUI_ENDDEMO",        "GUI_GAMEOVER",        "GUI_NORMAL",
     "ACTORSETSTATE",  "PLAYAVI",      "WAITFORACTOR",     "FX_WEAPON",      "VOLTAGE",        "ROCKET",             "ATTACK",              "USEANIMATION",

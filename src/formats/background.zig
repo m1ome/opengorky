@@ -44,6 +44,56 @@ pub fn decode(gpa: Allocator, bytes: []const u8) (Error || Allocator.Error)!Imag
     return img;
 }
 
+/// `bkg1` of `img`, as the game's: 256×256 tiles row by row (the last ones cut to
+/// fit), RGB565, each tile's data right after the previous one.
+pub fn encode(gpa: Allocator, img: Image) Allocator.Error![]u8 {
+    const tile = 256;
+    const tw = (img.width + tile - 1) / tile;
+    const th = (img.height + tile - 1) / tile;
+    const n = tw * th;
+    var size: usize = header_size + n * tile_rec_size;
+    const data_start = size;
+    size += @as(usize, img.width) * img.height * 2;
+    const out = try gpa.alloc(u8, size);
+    @memset(out[0..data_start], 0);
+    @memcpy(out[0..4], magic);
+    std.mem.writeInt(u32, out[8..12], n, .little);
+    std.mem.writeInt(u32, out[12..16], img.width, .little);
+    std.mem.writeInt(u32, out[16..20], img.height, .little);
+    var off: usize = data_start;
+    var k: usize = 0;
+    for (0..th) |ty| for (0..tw) |tx| {
+        const x0 = tx * tile;
+        const y0 = ty * tile;
+        const w = @min(tile, img.width - x0);
+        const h = @min(tile, img.height - y0);
+        const rec = out[header_size + k * tile_rec_size ..][0..tile_rec_size];
+        for ([_]usize{ x0, y0, w, h, off }, 0..) |v, i| std.mem.writeInt(u32, rec[i * 4 ..][0..4], @intCast(v), .little);
+        for (0..h) |y| for (0..w) |x| {
+            const p = img.pixels[((y0 + y) * img.width + x0 + x) * 4 ..][0..3];
+            const c = @as(u16, p[0] >> 3) << 11 | @as(u16, p[1] >> 2) << 5 | p[2] >> 3;
+            std.mem.writeInt(u16, out[off..][0..2], c, .little);
+            off += 2;
+        };
+        k += 1;
+    };
+    return out;
+}
+
+test "encode: tiles as the game's, read back" {
+    const gpa = std.testing.allocator;
+    var img = try Image.init(gpa, 300, 2);
+    defer img.deinit(gpa);
+    for (0..2) |y| for (0..300) |x| img.setRgb565(x, y, @intCast(x * 97 + y));
+    img.setRgb565(299, 1, 0xf81f);
+    const bytes = try encode(gpa, img);
+    defer gpa.free(bytes);
+    try std.testing.expectEqual(2, std.mem.readInt(u32, bytes[8..12], .little));
+    var back = try decode(gpa, bytes);
+    defer back.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, img.pixels, back.pixels);
+}
+
 test "decode two tiles" {
     const gpa = std.testing.allocator;
     var buf: [header_size + 2 * tile_rec_size + 4]u8 = @splat(0);

@@ -97,10 +97,28 @@ pub fn depthSource(self: *LevelView) render_layer.DepthSource {
 /// Shadow plane offset toward the camera (0x419910: −0.002 of normalised depth,
 /// constant 0x508560) in layer depth units: isometric — 0.002·(frontPlane −
 /// backPlane) (layer depth unit = world unit along the view); perspective —
-/// 0.002 of the W-buffer range.
+/// 0.002 of the W-buffer range, plus our compensation: the floor's largest
+/// residual beyond `tol`. The shadow plane is the floor itself, and `tol` (90th
+/// percentile) leaves the rest of the floor torn into stripes by the depth test (the
+/// raised platform of 01__port_silos: 1–2 .zbf steps beyond it).
 pub fn shadowBias(self: *LevelView, src: render_layer.DepthSource) f32 {
     return switch (src) {
-        .persp => |pz| 0.002 * pz.tl,
+        .persp => |pz| 0.002 * pz.tl + @max(0, floorSpread(self, pz) - pz.tol),
         else => 0.002 * @abs(planeSpan(self) orelse 0),
     };
+}
+
+/// Largest floor residual for this depth source (battle grid or walkable `.wm`
+/// cells; once per level).
+fn floorSpread(self: *LevelView, pz: @FieldType(render_layer.DepthSource, "persp")) f32 {
+    if (self.floor_spread) |t| return t;
+    const cam = switch (self.world.cam) {
+        .persp => |p| p,
+        else => return 0,
+    };
+    var pts: [4096][3]f32 = undefined;
+    const fp = if (self.world.combat_map) |cm| og.render.depth_fit.gridPoints(cm, &pts) else walkPoints(self, &pts);
+    const t = og.render.depth_fit.perspSpread(cam, fp, pz.z, pz.far, pz.tl, pz.tol);
+    self.floor_spread = t;
+    return t;
 }

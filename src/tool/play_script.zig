@@ -100,6 +100,19 @@ fn runCommand(g: *play.PlayGame, w: *og.state.world.World, cmd: []const u8) !boo
         try g.runUntil(try std.fmt.parseInt(u64, cmd[5..], 10), Never.f);
         return true;
     }
+    if (std.mem.startsWith(u8, cmd, "safe:")) {
+        // safe:CODE — type the code on the open safe keypad; take what the safe shows.
+        if (w.act.safe_box == null) try out.print("  no safe keypad open\n", .{});
+        try og.world.actions.enterSafeCode(w, try std.fmt.parseInt(i32, cmd[5..], 10));
+        // The door swings, then the window opens (pending_explore).
+        try g.runUntil(120, Never.f);
+        if (g.cur().act.exploring) |ex| {
+            try og.inventory.box.takeAllFromBox(g.cur(), ex.box, ex.hero);
+            g.cur().act.exploring = null;
+            try out.print("  safe: took all\n", .{});
+        } else try out.print("  safe: nothing shown\n", .{});
+        return true;
+    }
     if (std.mem.startsWith(u8, cmd, "tap:")) {
         // tap:X,Y — a background click without waiting (the selected hero starts moving).
         _ = try actions_mod.click(w, try common.parseXY(cmd[4..]));
@@ -225,6 +238,15 @@ fn runCommand(g: *play.PlayGame, w: *og.state.world.World, cmd: []const u8) !boo
                 break;
             }
             try out.print("  {s}: hp {d}/{d}\n", .{ h.name, og.fields.hp(h), og.fields.maxHp(h) });
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, cmd, "heroes")) {
+        // Party heroes: shown (enabled, placed), where, which one is selected.
+        for (w.rt.objects.items) |h| {
+            if (!og.state.world.isHeroActor(h)) continue;
+            const p = w.screenPos(h);
+            try out.print("  {s}{s}: {s}{s} bg {d:.0},{d:.0}\n", .{ h.name, if (std.ascii.eqlIgnoreCase(h.name, w.selected_hero)) " (selected)" else "", if (h.enabled) "on" else "off", if (og.state.world.actorOf(h).placed) "" else " unplaced", p[0], p[1] });
         }
         return true;
     }

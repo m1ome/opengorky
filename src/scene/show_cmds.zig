@@ -3,8 +3,6 @@
 
 const std = @import("std");
 const num = @import("../num.zig");
-const fields = @import("../fields.zig");
-const inventory = @import("../inventory.zig");
 const scriptlet = @import("../formats.zig").scriptlet;
 const dialog = @import("../formats.zig").dialog;
 const archive = @import("../formats.zig").archive;
@@ -27,6 +25,16 @@ pub fn execShow(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) !
         };
         return true;
     }
+    if (eq(n, "ZOOM")) {
+        // ZOOM(percent[, time 1/100 s]) (0x478220 → 0x420030): the camera zoom goes to
+        // percent (100…200)/100; time 0 at once, an integer time like DOLLY's, otherwise
+        // at zoom_speed (0x5927f4). An integer percent, else a syntax error.
+        if (c.args.len < 1 or c.args[0] != .number) return true;
+        const z = num.toF32(std.math.clamp(c.arg(0).int(), 100, 200)) / 100;
+        const t: ?f32 = if (c.args.len > 1 and c.args[1] == .number) num.toF32(c.arg(1).int()) else null;
+        w.out.zoom = .{ .to = z, .time = t };
+        return true;
+    }
     if (eq(n, "FADE_OUT") or eq(n, "FADE_IN")) {
         w.scene.fade_target = if (eq(n, "FADE_OUT")) 1 else 0;
         self.wait = .{ .ticks = fade_ticks };
@@ -46,7 +54,7 @@ pub fn execShow(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) !
     }
     if (eq(n, "PANORAMA_ON")) {
         w.scene.panorama = true;
-        w.scene.panorama_h = 42;
+        w.scene.panorama_h = @import("../state.zig").scene.panoramaHeight();
         return true;
     }
     if (eq(n, "PANORAMA_OFF")) {
@@ -78,6 +86,7 @@ pub fn execShow(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) !
         if (i >= d.lines.len) return true;
         const line = d.lines[i];
         w.scene.subtitle = .{ .speaker = line.speaker, .text = line.text };
+        w.scene.dialog_cam = if (std.mem.eql(u8, self.name, "dialog")) line.cam else null;
         w.scene.splitPages(w.res.dialog_font, line.text);
         w.scene.line_open = true;
         // Our text estimate (2 ticks a character, at least 2 s); the host
@@ -90,7 +99,7 @@ pub fn execShow(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) !
             return true;
         }
         var buf: [96]u8 = undefined;
-        const voice = try dialog.voiceName(&buf, self.dialog_file, line.code, i);
+        const voice = try dialog.voiceName(&buf, self.dialog_file, line.code, d.voiceIndex(i));
         try w.out.voice_events.append(w.gpa, try w.arena_state.allocator().dupe(u8, voice));
         self.wait = .dialog;
         return true;
@@ -153,7 +162,8 @@ pub fn loadDialog(self: *World, file: []const u8) !dialog.Dialog {
         self.res.lang.find(std.fmt.bufPrint(&buf, "{s}.dlg", .{file}) catch file) orelse
         return error.NotFound;
     const a = self.arena_state.allocator();
-    const d = try dialog.parse(a, try self.res.lang.readAlloc(self.io, a, e));
+    const language = if (self.strings) |t| @import("../formats.zig").strtab.language(t.*) else 0;
+    const d = try dialog.parseCut(a, try self.res.lang.readAlloc(self.io, a, e), dialog.editionCut(file, language));
     try self.scene.dialog_cache.put(a, try a.dupe(u8, file), d);
     return d;
 }

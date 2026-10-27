@@ -4,6 +4,7 @@ const std = @import("std");
 const vec = @import("../vec.zig");
 const actor_mod = @import("../actor.zig");
 const fields = @import("../fields.zig");
+const og_adjust = @import("../formats.zig").adjust;
 const object = @import("../script.zig").object;
 const effects_mod = @import("../effects.zig");
 const Object = object.Object;
@@ -17,7 +18,7 @@ pub fn morphActor(self: *World, o: *Object, class_file: []const u8, mesh: []cons
     const a = world.actorOf(o);
     const ar = self.rt.arena();
     a.morph = .{ .class = try ar.dupe(u8, class_file), .mesh = try ar.dupe(u8, mesh), .idle = try ar.dupe(u8, idle) };
-    a.morph_left = 50;
+    a.morph_left = @intCast(@max(0, og_adjust.getInt("morf_life2", 50)));
     a.morph_due = false;
     const p = fields.pos(o);
     const ang = fields.modelAngle(fields.angle(o)) + a.angle_offset;
@@ -63,6 +64,9 @@ pub fn releaseRemoved(self: *World) void {
     for (e.flames.items) |*f| if (gone(f.actor)) {
         f.actor = null;
     };
+    for (e.projectiles.items) |*pr| if (gone(pr.owner)) {
+        pr.owner = null;
+    };
     i = 0;
     while (i < e.morphs.items.len) {
         if (gone(e.morphs.items[i].owner)) _ = e.morphs.orderedRemove(i) else i += 1;
@@ -70,7 +74,7 @@ pub fn releaseRemoved(self: *World) void {
 }
 
 /// Change an actor's class (`.mtm` = fighter class): animations and vars from its init(),
-/// model `mesh`, idle `idle`.
+/// model `mesh`, then the animation `idle` once.
 pub fn applyMorph(self: *World, o: *Object, class_file: []const u8, mesh: []const u8, idle: []const u8) !void {
     const cls = self.rt.loadClass(class_file) catch |err| {
         std.log.warn("morph {s}: {t}", .{ class_file, err });
@@ -83,8 +87,11 @@ pub fn applyMorph(self: *World, o: *Object, class_file: []const u8, mesh: []cons
     if (mesh.len > 0) if (o.getVar("meshFile")) |v| {
         v.value = .{ .string = try self.rt.arena().dupe(u8, mesh) };
     };
-    a.forced_idle = if (idle.len > 0) a.resolve(idle) else null;
+    // 0x426503: an idle of the new class, then the morph's animation once over it, raw
+    // name, with the transition (0x426517: no loop, length 8, not instant).
     a.pickIdle(self.crt());
+    a.instant = false;
+    if (idle.len > 0) a.play(idle, false, false);
 }
 
 /// Flame streams behind a weapon (0x49fdc0): each tick a new direction from a fixed point
@@ -139,6 +146,18 @@ pub fn tickBind(self: *World, o: *Object, a: *actor_mod.Actor, bd: *actor_mod.Ac
     const lw = actor_mod.model_cache.toWorld(m, lp, self.actorScale() * a.scale_mul * m.unitScale(), fields.pos(o), @cos(ang), @sin(ang));
     const vp = fields.pos(bd.victim);
     va.render_offset = .{ (lw[0] - vp[0]) * bd.w, (lw[1] - vp[1]) * bd.w, (lw[2] - vp[2] + bd.z) * bd.w };
+}
+
+/// Held ball (0x4a5cac): while `hold` > 0 it sits at the midpoint of the owner's
+/// "kula1" and "kula2" points (the hands) in the current frame.
+pub fn aimBalls(self: *World) void {
+    for (self.effects.projectiles.items) |*pr| {
+        if (pr.hold == 0) continue;
+        const o = pr.owner orelse continue;
+        const a = linkWorld(self, o, "kula1") orelse continue;
+        const b = linkWorld(self, o, "kula2") orelse continue;
+        pr.pos = .{ (a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5 };
+    }
 }
 
 /// World position of an actor's `link` point in the current frame.

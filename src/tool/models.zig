@@ -10,7 +10,8 @@ const export_cmd = @import("export.zig");
 const archive = og.formats.archive;
 
 /// Parses every model in `common/other.dat: gfx_3d\`: mesh, animation list,
-/// bone frames; checks the animation frames exist in `.bfr`.
+/// bone frames; checks the animation frames exist in `.bfr` and that the writers
+/// give each file back byte for byte.
 /// Model sizes: height from chunk 12 and the pose height in the first frame.
 pub fn modelSizes(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8) !void {
     var dat = try common_mod.openDat(io, game_dir, .{});
@@ -63,6 +64,13 @@ fn loadModel(io: Io, gpa: Allocator, arc: archive.Archive, e: *const archive.Ent
         else => err,
     };
     defer mesh.deinit();
+    // Writers must give the game's bytes back (model import and edits rely on it).
+    const msh_back = try og.formats.mesh.encode(gpa, mesh);
+    defer gpa.free(msh_back);
+    if (!std.mem.eql(u8, msh_back, data)) return error.MshRewriteDiffers;
+    // Shipped models past the exe's limits (degenerate triangles cut a part short in
+    // the exe; importers refuse them).
+    og.formats.mesh.checkLimits(mesh) catch |err| std.debug.print("{s}: over exe limits: {t}\n", .{ e.name, err });
 
     var buf: [archive.name_size]u8 = undefined;
     const stem = e.name[0 .. e.name.len - 4];
@@ -75,6 +83,10 @@ fn loadModel(io: Io, gpa: Allocator, arc: archive.Archive, e: *const archive.Ent
         else => err,
     };
     defer anims.deinit();
+    // The editor writes sound edits back: the same bytes must come out.
+    const back = try og.formats.anim.writeAni(gpa, anims.items);
+    defer gpa.free(back);
+    if (!std.mem.eql(u8, back, ani_data)) return error.AniRewriteDiffers;
 
     const bfr_entry = arc.find(try std.fmt.bufPrint(&buf, "{s}.bfr", .{stem})) orelse return error.NoBfr;
     const bfr_data = try arc.readAlloc(io, gpa, bfr_entry);
@@ -84,7 +96,11 @@ fn loadModel(io: Io, gpa: Allocator, arc: archive.Archive, e: *const archive.Ent
         else => err,
     };
     defer frames.deinit(gpa);
+    const bfr_back = try og.formats.anim.writeBfr(gpa, frames);
+    defer gpa.free(bfr_back);
+    if (!std.mem.eql(u8, bfr_back, bfr_data)) return error.BfrRewriteDiffers;
     try og.formats.anim.checkFrames(anims, frames);
+    try og.formats.anim.checkLimits(anims.items, frames, mesh.boneCount());
     anims_out.* += anims.items.len;
     frames_out.* += frames.frames;
 }
@@ -106,6 +122,12 @@ pub fn renderModel(
     defer dat.close(io);
     var cache = try og.actor.model_cache.Cache.open(io, gpa, dat);
     defer cache.deinit();
+    var overlay: Overlay = .{ .io = io, .dir = undefined, .arena = .init(gpa) };
+    defer overlay.arena.deinit();
+    if (models_dir) |d| {
+        overlay.dir = d;
+        cache.overlay = .{ .ctx = &overlay, .get = Overlay.get };
+    }
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -185,7 +207,7 @@ pub fn renderModel(
             }
         }.f;
         const light = [3]f32{ 0.4, 0.7, -0.6 };
-        for (parts.items) |d| for (d.model.mesh.parts, d.pts) |part, ppts| {
+        for (parts.items) |d| for (d.model.mesh.parts, d.pts, 0..) |part, ppts, pi| {
             for (part.triangles) |t| {
                 var sp: [3][3]f32 = undefined;
                 var uv: [3][2]f32 = undefined;
@@ -198,7 +220,7 @@ pub fn renderModel(
                 const n = og.vec.cross(e1, e2);
                 const len = og.vec.len(n);
                 const shade = if (len > 0) 0.45 + 0.55 * @abs((n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / len) else 1;
-                canvas.triangle(sp, uv, d.model.texture, og.render.raster.gray(shade));
+                canvas.triangle(sp, uv, d.model.partTexture(pi), og.render.raster.gray(shade));
             }
         };
         _ = tex;
@@ -210,3 +232,76 @@ pub fn renderModel(
 pub var flash_spec: ?[]const u8 = null;
 
 const Drawn = struct { model: *const og.actor.model_cache.Model, pts: [][][3]f32 };
+
+/// `$OPENGORKY_MODELS`: a folder `model` reads `gfx_3d\` files from before the game's
+/// (what gltf-import writes: `<name>.msh`, `textures/<tex>.3df`).
+pub var models_dir: ?Io.Dir = null;
+
+const Overlay = struct {
+    io: Io,
+    dir: Io.Dir,
+    arena: std.heap.ArenaAllocator,
+
+    fn get(ctx: *anyopaque, name: []const u8) ?[]const u8 {
+        const self: *Overlay = @ptrCast(@alignCast(ctx));
+        if (!std.ascii.startsWithIgnoreCase(name, "gfx_3d\\")) return null;
+        const a = self.arena.allocator();
+        const rel = a.dupe(u8, name["gfx_3d\\".len..]) catch return null;
+        std.mem.replaceScalar(u8, rel, '\\', '/');
+        return self.dir.readFileAlloc(self.io, rel, a, .limited(64 << 20)) catch null;
+    }
+};
+
+/// gltf-export: a game model (textures, skeleton, animations, attach points) as `.glb`.
+pub fn gltfExport(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, name: []const u8, path: []const u8) !void {
+    var dat = try common_mod.openDat(io, game_dir, .{});
+    defer dat.close(io);
+    var cache = try og.actor.model_cache.Cache.open(io, gpa, dat);
+    defer cache.deinit();
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const model = cache.get(name) orelse return error.NotFound;
+    const names = try og.formats.mesh.textureNames(arena, model.mesh);
+    const images = try arena.alloc(?og.formats.image.Image, names.len);
+    var buf: [archive.name_size]u8 = undefined;
+    for (names, images) |n, *img| {
+        const bytes = cache.readFile(try std.fmt.bufPrint(&buf, "gfx_3d\\textures\\{s}", .{n})) catch null;
+        img.* = if (bytes) |b| og.formats.tex3df.decode(arena, b) catch null else null;
+        if (img.* == null) try out.print("texture {s} missing\n", .{n});
+    }
+    const glb = try og.actor.gltf.exportGlb(gpa, name, model.mesh, model.anims.items, model.frames, images);
+    defer gpa.free(glb);
+    try export_cmd.writeFileMkdir(io, Io.Dir.cwd(), path, glb);
+    try out.print("{s}: {d} parts, {d} bones, {d} animations, {d} attach points -> {s} ({d} bytes)\n", .{ name, model.mesh.parts.len, model.mesh.boneCount(), model.anims.items.len, model.mesh.hold_modes.len, path, glb.len });
+}
+
+/// gltf-import: `.glb` → `<out>/<name>.msh/.ani/.bfr` and `<out>/textures/*.3df`; with
+/// `anims_only`, the glb's animations into game model `name` (`<out>/<name>.ani/.bfr`).
+pub fn gltfImport(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, glb_path: []const u8, name: []const u8, out_dir: []const u8, anims_only: bool) !void {
+    const glb = try Io.Dir.cwd().readFileAlloc(io, glb_path, gpa, .limited(1 << 30));
+    defer gpa.free(glb);
+    var files = if (anims_only) blk: {
+        var dat = try common_mod.openDat(io, game_dir, .{});
+        defer dat.close(io);
+        var cache = try og.actor.model_cache.Cache.open(io, gpa, dat);
+        defer cache.deinit();
+        const m = cache.get(name) orelse return error.NotFound;
+        break :blk try og.actor.gltf.importAnimationsInto(gpa, glb, m.mesh, m.anims.items, m.frames);
+    } else try og.actor.gltf.importGlb(gpa, glb, name);
+    defer files.deinit();
+    var dir = try Io.Dir.cwd().createDirPathOpen(io, out_dir, .{});
+    defer dir.close(io);
+    var buf: [256]u8 = undefined;
+    for ([_][]const u8{ "msh", "ani", "bfr" }, [_][]const u8{ files.msh, files.ani, files.bfr }) |ext, data| {
+        if (data.len == 0) continue;
+        const rel = try std.fmt.bufPrint(&buf, "{s}.{s}", .{ name, ext });
+        try export_cmd.writeFileMkdir(io, dir, rel, data);
+        try out.print("{s}/{s} ({d} bytes)\n", .{ out_dir, rel, data.len });
+    }
+    for (files.textures) |t| {
+        const rel = try std.fmt.bufPrint(&buf, "textures/{s}", .{t.name});
+        try export_cmd.writeFileMkdir(io, dir, rel, t.data);
+        try out.print("{s}/{s} ({d} bytes)\n", .{ out_dir, rel, t.data.len });
+    }
+}

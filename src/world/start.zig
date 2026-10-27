@@ -128,7 +128,7 @@ pub fn actorHooks(self: *World, o: *Object) !void {
 }
 
 /// Camera from level vars after initCamera(): perspective when perspective=1.
-fn makeCamera(self: *World, l: *Object) camera.Camera {
+pub fn makeCamera(self: *World, l: *Object) camera.Camera {
     if (l.getInt("perspective") == 0) return .ortho;
     const size = backgroundSize(self) orelse return .ortho;
     const f = fields.getF;

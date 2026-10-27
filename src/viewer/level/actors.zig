@@ -69,7 +69,7 @@ fn dynamicLights(self: *LevelView, static: []const lf.Omni) ![]const lf.Omni {
         const n = World.nativeOf(o);
         if (n.kind != .actor or !n.actor.placed or n.actor.fx != .shock) continue;
         const p = og.fields.pos(o);
-        try list.append(a, .{ .pos = .{ p[0], p[1], p[2] + 500 * as }, .color = .{ 0.5, 0.5, 1 }, .range = 600 * as });
+        try list.append(a, .{ .pos = .{ p[0], p[1], p[2] + og.formats.adjust.getFloat("attack_shocker_light_level", 500) * as }, .color = .{ 0.5, 0.5, 1 }, .range = og.formats.adjust.getFloat("attack_shocker_light_range", 600) * as });
     }
     return list.items;
 }
@@ -81,7 +81,7 @@ fn itemFlash(self: *LevelView, o: *og.script.object.Object) f32 {
     if (w.battle != null or w.scene.cutscene or self.ui_modal) return 1;
     if (o.getInt("visible") == 0) return 1;
     const p = og.fields.pos(o);
-    const range = 1700 * self.world.actorScale();
+    const range = og.formats.adjust.getFloat("flash_range", 1700) * self.world.actorScale();
     var near = false;
     const heroes = w.party();
     for (heroes.slice()) |h| {
@@ -92,7 +92,8 @@ fn itemFlash(self: *LevelView, o: *og.script.object.Object) f32 {
     }
     if (!near) return 1;
     const t = og.num.toF32(w.ticks) / og.state.world.tick_hz;
-    return 0.4 + 0.6 * @abs(@sin(t * 4));
+    const lo = og.formats.adjust.getFloat("flash_min", 0.4);
+    return lo + (1 - lo) * @abs(@sin(t * og.formats.adjust.getFloat("flash_speed", 4)));
 }
 /// A `classType` 5 fighter (factory 0x4bc6c0 → class 0x4bcf70, table 0x50df40) is
 /// not drawn: its draw +0x50 is an empty `ret` (0x4bcf90). These are the monitors
@@ -231,16 +232,35 @@ fn weaponInHand(self: *LevelView, o: *og.script.object.Object, model: *const og.
 fn linkedMeshes(self: *LevelView, o: *og.script.object.Object, model: *const og.actor.model_cache.Model) []const render_layer.Layer.Attachment {
     const models = self.models orelse return &.{};
     const links = world_mod.actorOf(o).links.items;
-    if (links.len == 0) return &.{};
-    const out = self.frame_arena.allocator().alloc(render_layer.Layer.Attachment, links.len) catch return &.{};
-    var n: usize = 0;
+    var out: std.ArrayList(render_layer.Layer.Attachment) = .empty;
+    const a = self.frame_arena.allocator();
     for (links) |l| {
         const m = models.get(l.mesh) orelse continue;
-        out[n] = holdOn(model, m, l.link) orelse continue;
-        if (l.anim.len > 0) out[n].frame = m.frameOf(l.anim, @floatFromInt(self.world.ticks -| l.anim_from), false);
-        n += 1;
+        var at = holdOn(model, m, l.link) orelse continue;
+        if (l.anim.len > 0) {
+            // The first one holds its first frame through the transition from frame 0
+            // (0x44f910 with length 8, as the actor's `anim_hold`), then runs.
+            const bt = og.actor.Actor.blend_ticks;
+            const e = self.world.ticks -| l.anim_from;
+            const hold = if (l.blend) bt -| e else 0;
+            at.frame = m.frameOf(l.anim, @floatFromInt(if (l.blend) e -| bt else e), false);
+            if (hold > 0) {
+                const w = @min(1, @as(f32, @floatFromInt(bt - hold)) / @as(f32, @floatFromInt(bt - 1)));
+                at.model = og.actor.model_cache.blended(a, m, 0, null, @splat(0), at.frame, w) catch return out.items;
+                at.frame = 0;
+            }
+        }
+        out.append(a, at) catch return out.items;
     }
-    return out[0..n];
+    // Actors riding it (LinkActor): their meshes in their own animations (0x4297b4).
+    for (self.world.rt.objects.items) |rider| {
+        const n = World.nativeOf(rider);
+        if (n.kind != .actor or n.actor.attached_to != o or !rider.enabled or n.deleted) continue;
+        const lp = n.actor.link_point orelse continue;
+        const m = models.get(og.fields.meshFile(rider)) orelse continue;
+        out.append(a, .{ .model = m, .link = lp, .frame = n.actor.frameIn(m) }) catch return out.items;
+    }
+    return out.items;
 }
 fn holdOn(model: *const og.actor.model_cache.Model, wm: *const og.actor.model_cache.Model, link: []const u8) ?render_layer.Layer.Attachment {
     return .{ .model = wm, .link = model.mesh.holdMode(link) orelse return null };
@@ -301,8 +321,9 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
             if (!drawnActor(self, o)) continue;
             const n = World.nativeOf(o);
             if (n.actor.alpha == 0 and n.actor.fxLevel() == null) continue;
-            const model = models.get(og.fields.meshFile(o)) orelse continue;
-            const pl = place.placement(self, o, model) orelse continue;
+            const raw = models.get(og.fields.meshFile(o)) orelse continue;
+            var pl = place.placement(self, o, raw) orelse continue;
+            const model = try place.posed(self, o, raw, &pl);
             const mf = og.fields.meshFile(o);
             const all = std.ascii.eqlIgnoreCase(mf, "rura") or std.ascii.eqlIgnoreCase(mf, "fang");
             try layer.castShadow(self.frame_arena.allocator(), self.world.cam, model, pl, lt.shadow_light, all);
@@ -312,35 +333,9 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
     pt = perf.now();
     // Model triangles are recorded, then rasterised in screen bands on threads.
     layer.canvas.record(self.gpa);
-    for (self.world.rt.objects.items) |o| {
-        if (!drawnActor(self, o)) continue;
-        const n = World.nativeOf(o);
-        const model = models.get(og.fields.meshFile(o)) orelse continue;
-        var pl = place.placement(self, o, model) orelse continue;
-        pl.attach = weaponInHand(self, o, model);
-        pl.extra = linkedMeshes(self, o, model);
-        if (!actorPasses(self, o, &n.actor, &pl)) continue;
-        try layer.draw(self.frame_arena.allocator(), self.world.cam, model, pl);
-        n.actor.screen_box = if (layer.bbox[0] <= layer.bbox[2]) .{ layer.bbox[0] + scroll[0], layer.bbox[1] + scroll[1], layer.bbox[2] + scroll[0], layer.bbox[3] + scroll[1] } else null;
-        if (std.ascii.eqlIgnoreCase(o.name, self.world.selected_hero) and layer.bbox[0] <= layer.bbox[2]) self.hero_box = layer.bbox;
-        any = true;
-    }
-    // New morph model (0x4260a0): after a delay, idle animation, alpha from 50/255,
-    // no depth write.
-    for (self.world.effects.morphs.items) |mo| {
-        if (mo.delay > 0) continue;
-        const model = models.get(mo.mesh) orelse continue;
-        try layer.draw(self.frame_arena.allocator(), self.world.cam, model, .{
-            .pos = mo.pos,
-            .angle = mo.angle,
-            .scale = scale,
-            .frame = model.frameOf(mo.anim, mo.anim_ticks, true),
-            .alpha = og.num.toF32(mo.alpha) / 255,
-            .depth_write = false,
-        });
-        any = true;
-    }
-    // Ground items: the item's `meshFile` model at the item's `scale`.
+    // Ground items: the item's `meshFile` model at the item's `scale`. Before the
+    // actors: their depth bias is for the background only (layer.Placement.depth_bias),
+    // against actors they sort by true depth as in the exe (0x4adb20 → 0x44d310).
     for (self.world.rt.objects.items) |o| {
         if (!og.state.world.isGroundItem(o)) continue;
         const model = models.get(og.fields.meshFile(o)) orelse continue;
@@ -357,6 +352,56 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
         n.actor.screen_box = if (layer.bbox[0] <= layer.bbox[2]) .{ layer.bbox[0] + scroll[0], layer.bbox[1] + scroll[1], layer.bbox[2] + scroll[0], layer.bbox[3] + scroll[1] } else null;
         any = true;
     }
+    for (self.world.rt.objects.items) |o| {
+        if (!drawnActor(self, o)) continue;
+        const n = World.nativeOf(o);
+        const raw = models.get(og.fields.meshFile(o)) orelse continue;
+        var pl = place.placement(self, o, raw) orelse continue;
+        const model = try place.posed(self, o, raw, &pl);
+        pl.attach = weaponInHand(self, o, model);
+        pl.extra = linkedMeshes(self, o, model);
+        if (!actorPasses(self, o, &n.actor, &pl)) continue;
+        try layer.draw(self.frame_arena.allocator(), self.world.cam, model, pl);
+        var box = layer.bbox;
+        any = true;
+        // RegisterExtraBody (0x42a138): each extra mesh in the actor's place, the main mesh's
+        // shift (+0x28) added to its own; not `still` — in the actor's animation with its own
+        // player's transition (0x4233d5 → 0x44f910). The screen box takes them in (0x42a9da).
+        for (&n.actor.extra_bodies) |*slot| if (slot.*) |*eb| if (models.get(eb.mesh)) |em| {
+            const shifted = try self.frame_arena.allocator().create(og.actor.model_cache.Model);
+            var ep = pl;
+            ep.attach = null;
+            ep.extra = &.{};
+            ep.frame = 0;
+            const em_posed = if (eb.still) em else blk: {
+                const to = n.actor.frameIn(em);
+                eb.last_frame = to;
+                ep.frame = to;
+                break :blk try place.posedState(self, eb, n.actor.blendWeight(), to, em, &ep);
+            };
+            shifted.* = em_posed.*;
+            for (&shifted.mesh.center, raw.mesh.center) |*cc, mc| cc.* += mc;
+            try layer.draw(self.frame_arena.allocator(), self.world.cam, shifted, ep);
+            if (layer.bbox[0] <= layer.bbox[2]) box = .{ @min(box[0], layer.bbox[0]), @min(box[1], layer.bbox[1]), @max(box[2], layer.bbox[2]), @max(box[3], layer.bbox[3]) };
+        };
+        n.actor.screen_box = if (box[0] <= box[2]) .{ box[0] + scroll[0], box[1] + scroll[1], box[2] + scroll[0], box[3] + scroll[1] } else null;
+        if (std.ascii.eqlIgnoreCase(o.name, self.world.selected_hero) and box[0] <= box[2]) self.hero_box = box;
+    }
+    // New morph model (0x4260a0): after a delay, idle animation, alpha from 50/255,
+    // no depth write.
+    for (self.world.effects.morphs.items) |mo| {
+        if (mo.delay > 0) continue;
+        const model = models.get(mo.mesh) orelse continue;
+        try layer.draw(self.frame_arena.allocator(), self.world.cam, model, .{
+            .pos = mo.pos,
+            .angle = mo.angle,
+            .scale = scale,
+            .frame = model.frameOf(mo.anim, mo.anim_ticks, true),
+            .alpha = og.num.toF32(mo.alpha) / 255,
+            .depth_write = false,
+        });
+        any = true;
+    }
     // Effects on link points (flashes, "nitro"): after all models, depth-tested
     // against the finished z-buffer, like the exe's z-test without depth write.
     if (try attachedEffects(self, layer, models)) any = true;
@@ -368,7 +413,13 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
         any = true;
     };
     perf.add(.shadow_mix, pt);
-    if (self.world.isCombat()) try billboards.all(self, LayerSink{ .self = self, .layer = layer, .models = models, .drew = &any });
+    // Billboards recorded and rasterised in bands on threads too: explosions cover
+    // much of the screen, one by one on this thread they took tens of ms per frame.
+    if (self.world.isCombat()) {
+        layer.canvas.record(self.gpa);
+        try billboards.all(self, LayerSink{ .self = self, .layer = layer, .models = models, .drew = &any });
+        layer.canvas.flush(layer_mod.rasterPool(self.io));
+    }
     if (!any) return;
     self.layer_any = true;
     pt = perf.now();
@@ -400,5 +451,6 @@ fn present(self: *LevelView, r: *c.SDL_Renderer, tex: *c.SDL_Texture, layer: *co
 /// An actor drawn by the model layer (and casting a shadow).
 fn drawnActor(self: *LevelView, o: *og.script.object.Object) bool {
     const n = World.nativeOf(o);
-    return n.kind == .actor and n.actor.placed and o.enabled and !n.deleted and !unseenFighter(o) and !sidelined(self, o);
+    // A linked rider is drawn by its parent (0x42b210).
+    return n.kind == .actor and n.actor.placed and n.actor.link_point == null and o.enabled and !n.deleted and !unseenFighter(o) and !sidelined(self, o);
 }

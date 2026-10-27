@@ -72,31 +72,18 @@ pub fn create(io: Io, gpa: Allocator, dat: Io.Dir, level_name: []const u8, model
     errdefer w.deinitScripts();
     w.level_name = try w.arena_state.allocator().dupe(u8, level_name);
     try @import("../builtins.zig").registerBuiltins(w);
-    var ar_buf: [archive.name_size]u8 = undefined;
-    if (w.res.other.find(try std.fmt.bufPrint(&ar_buf, "{s}.ar", .{level_name}))) |e| {
-        const a = w.arena_state.allocator();
-        w.areas = try level_files.parseAreas(a, try w.res.other.readAlloc(io, a, e));
-    }
-    if (w.res.other.find(try std.fmt.bufPrint(&ar_buf, "{s}.cm", .{level_name}))) |e| {
-        const a = w.arena_state.allocator();
-        w.combat_map = try level_files.parseCombatMap(a, try w.res.other.readAlloc(io, a, e));
-    }
-    if (w.res.other.find(try std.fmt.bufPrint(&ar_buf, "{s}.wm", .{level_name}))) |e| {
-        const a = w.arena_state.allocator();
-        w.walk_map = try level_files.parseWalkMap(a, try w.res.other.readAlloc(io, a, e));
-    }
-    if (w.res.other.find(try std.fmt.bufPrint(&ar_buf, "{s}.wm2", .{level_name}))) |e| {
-        const a = w.arena_state.allocator();
-        // Bad .wm2/.ap: go on without them (the exe reports via 0x401f20 and continues);
-        // .wm and .cm are required, their errors fail the load.
-        w.walk_map2 = level_files.parseWalkMap(a, try w.res.other.readAlloc(io, a, e)) catch |err| blk: {
-            std.log.warn("{s}.wm2: {t}", .{ level_name, err });
-            break :blk null;
-        };
-    }
-    if (w.res.other.find(try std.fmt.bufPrint(&ar_buf, "{s}.ap", .{level_name}))) |e| {
-        const a = w.arena_state.allocator();
-        w.paths = level_files.parsePaths(a, try w.res.other.readAlloc(io, a, e)) catch |err| blk: {
+    const a = w.arena_state.allocator();
+    if (try levelFile(w, io, "ar")) |t| w.areas = try level_files.parseAreas(a, t);
+    if (try levelFile(w, io, "cm")) |t| w.combat_map = try level_files.parseCombatMap(a, t);
+    if (try levelFile(w, io, "wm")) |t| w.walk_map = try level_files.parseWalkMap(a, t);
+    // Bad .wm2/.ap: go on without them (the exe reports via 0x401f20 and continues);
+    // .wm and .cm are required, their errors fail the load.
+    if (try levelFile(w, io, "wm2")) |t| w.walk_map2 = level_files.parseWalkMap(a, t) catch |err| blk: {
+        std.log.warn("{s}.wm2: {t}", .{ level_name, err });
+        break :blk null;
+    };
+    if (try levelFile(w, io, "ap")) |t| {
+        w.paths = level_files.parsePaths(a, t) catch |err| blk: {
             std.log.warn("{s}.ap: {t}", .{ level_name, err });
             break :blk &.{};
         };
@@ -161,6 +148,7 @@ pub fn tickObjects(self: *World) !void {
     }
     spawn.aimFlames(self);
     spawn.releaseRemoved(self);
+    spawn.aimBalls(self);
     self.effects.tick(self.gpa, self.crt());
     // EARTHQUAKE (0x4205b0, 0x420b62): screen offset 0..5 px when strength > 10, else 0..3;
     // strength drops by 1 per frame.
@@ -279,4 +267,12 @@ fn nodeEvent(self: *World, o: *Object, ev: actor_mod.command.NodeEvent) !void {
     defer self.node_actor = null;
     defer self.node_cur = null;
     _ = try self.rt.callIfExists(script, "NodeResponse", &.{ .{ .int = ev.no }, .{ .int = ev.dir } });
+}
+
+/// The level's own `<level>.<ext>` (areas, grids, paths) in the world's arena; null if
+/// the level has none.
+fn levelFile(w: *World, io: Io, ext: []const u8) !?[]const u8 {
+    var buf: [archive.name_size]u8 = undefined;
+    const e = w.res.other.find(try std.fmt.bufPrint(&buf, "{s}.{s}", .{ w.level_name, ext })) orelse return null;
+    return try w.res.other.readAlloc(io, w.arena_state.allocator(), e);
 }

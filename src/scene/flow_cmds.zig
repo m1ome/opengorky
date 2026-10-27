@@ -2,8 +2,6 @@
 
 const std = @import("std");
 const num = @import("../num.zig");
-const fields = @import("../fields.zig");
-const inventory = @import("../inventory.zig");
 const walk = @import("../world.zig").walk;
 const scriptlet = @import("../formats.zig").scriptlet;
 const world_mod = @import("../state.zig").world;
@@ -72,6 +70,11 @@ pub fn execFlow(self: *Runner, w: *World, c: scriptlet.Command, n: []const u8) !
         // End of the game (`lab-the_end`): on this flag the host shows the credits, then
         // the main menu. (GUI_ENDDEMO in `gateopen` ends the demo; no-op in the full game.)
         w.flow.game_over = true;
+        return true;
+    }
+    if (eq(n, "GUI_GAMEOVER")) {
+        // 0x476bc7 → 0x45b3b0: the defeat screen of a lost battle, from a scene (game.tick).
+        if (w.flow.defeat_ticks == null) w.flow.defeat_ticks = 0;
         return true;
     }
     if (eq(n, "GO_RUNFUN")) {

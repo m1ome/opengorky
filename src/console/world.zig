@@ -81,6 +81,15 @@ pub fn run(c: Cmd, w: *World, cmd: []const u8, it: *common.Args, out: *std.Io.Wr
             try scenes.startScriptlet(w, name);
             try out.print("scene {s}\n", .{name});
         },
+        .playscene => {
+            const name = it.next() orelse return common.usage(out, "playscene <name>");
+            // As gorky-tool scenes: the level's start runs (its load scene queued), then
+            // that scene and what it left (fade, panorama, a level change) are dropped.
+            for (0..3) |_| try game.tick(w);
+            scenes.dropStart(w);
+            try scenes.startScriptlet(w, name);
+            try out.print("scene {s} (the level's own dropped)\n", .{name});
+        },
         .click => {
             const x = std.fmt.parseFloat(f32, it.next() orelse "") catch return common.usage(out, "click <x> <y>");
             const y = std.fmt.parseFloat(f32, it.next() orelse "") catch return common.usage(out, "click <x> <y>");

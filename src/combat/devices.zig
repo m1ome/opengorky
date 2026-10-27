@@ -1,5 +1,6 @@
 //! Pushing, barrels, time bombs, decoys.
 
+const adjust = @import("../formats.zig").adjust;
 const std = @import("std");
 const state_object = @import("../state.zig").object;
 const fields = @import("../fields.zig");
@@ -76,7 +77,7 @@ pub fn destroyBarrel(self: *Battle, w: *World, v: u16) !void {
     battle.note(self, "  {s} explodes{s}", .{ t.obj.name, if (visual) " (explosion)" else "" });
     if (visual) if (w.combat_map) |cm| {
         const c = cm.tileCenter(t.tile, 1);
-        const p = [3]f32{ c[0], c[1], c[2] + 250 * w.actorScale() };
+        const p = [3]f32{ c[0], c[1], c[2] + adjust.getFloat("attack_grenade_exp", 250) * w.actorScale() };
         fx.explosion.explosion(w, p);
         const q = w.cam.project(p);
         w.out.sound(w.gpa, "granat", .{ q.x, q.y });
@@ -120,7 +121,7 @@ pub fn placeTimeBomb(self: *Battle, w: *World, t: Tile) !void {
     if (!self.grid().open(t) or self.grid().at(t) != grid.Grid.none) return;
     if (self.fighters.items.len == max_fighters) return;
     const o = try spawnTimeBomb(w, cm.tileCenter(t, 1)) orelse return;
-    try self.bombs.append(w.gpa, .{ .obj = o, .tile = t, .fighter = try addDevice(self, o, t) });
+    try self.bombs.append(w.gpa, .{ .obj = o, .tile = t, .fighter = try addDevice(self, o, t), .seq = self.nextSeq() });
     battle.note(self, "  bomb at {d},{d}", .{ t[0], t[1] });
 }
 

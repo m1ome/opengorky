@@ -10,9 +10,11 @@ const Object = object_mod.Object;
 pub const model_cache = @import("actor/model_cache.zig");
 pub const skin = @import("actor/skin.zig");
 pub const camera = @import("actor/camera.zig");
+pub const gltf = @import("actor/gltf.zig");
 pub const slots = @import("actor/slots.zig");
 pub const command = @import("actor/command.zig");
 const fields = @import("fields.zig");
+const adjust = @import("formats.zig").adjust;
 
 pub const max_states = 10;
 /// The exe has 9 states with animation sets (0..8): RegisterAnimation (0x422960) and
@@ -26,6 +28,18 @@ const max_idle = 8;
 const Idle = struct { anim: []const u8, weight: u32, broken: bool = false };
 
 const Mapping = struct { logical: []const u8, actual: []const u8 };
+
+/// RegisterExtraBody slot (+0x2e64: still flag, +0x2e68 mesh, +0x2e6c its player): the
+/// player's transition state like the actor's `last_frame`, `blend_from` and `poses`.
+const ExtraBody = struct {
+    mesh: []const u8,
+    still: bool,
+    last_frame: u32 = 0,
+    blend_from: u32 = 0,
+    poses: [2]std.ArrayList([12]f32) = .{ .empty, .empty },
+    pose_drawn: u1 = 0,
+    pose_from: ?u1 = null,
+};
 
 pub const Actor = struct {
     /// A victim held at this actor's link point (SetBind…): z/w offsets, release countdown.
@@ -67,6 +81,8 @@ pub const Actor = struct {
     /// direction (4th argument, bit 29 of the walk queue entry, 0x423f10).
     queued_anim: ?[]const u8 = null,
     queued_reverse: bool = false,
+    /// Its 2nd argument (bit 30, 0x423f78 → 0x422f2b): played without the transition.
+    queued_instant: bool = false,
     /// Walk animation reversed (ActorSetWalkAnimation(name, 1): +0x30d8 < 0).
     walk_reverse: bool = false,
     /// Turning toward path points disabled (ActorEnableRotation(0): +0x31e9, 0x424ce2) —
@@ -93,11 +109,40 @@ pub const Actor = struct {
 
     anim: []const u8 = "",
     anim_ticks: f32 = 0,
-    /// Transition into a new animation (player 0x44f910 with length 8, 0x423389):
-    /// the frame holds for the first ticks (+0x1c grows by 1/9 to 1 — 10 ticks), then one
-    /// frame per tick. We use it for battle strikes (the exe counts strike and flash from
-    /// the start of the animation with this transition: Fatman — sound at frame 58, hit at tick 68).
+    /// The last animation the model had (0x44f910: a name the model lacks leaves the model
+    /// on the animation it was showing; `noteShown`, `frameIn`).
+    shown: struct { anim: []const u8 = "", ticks: f32 = 0, loop: bool = true, reverse: bool = false } = .{},
+    /// Transition into a new animation (player 0x44f910 with length 8, 0x423389): every
+    /// `play` of another animation; the frame holds for the first ticks (+0x1c grows by
+    /// 1/9 to 1 — 10 ticks), then one frame per tick. Strike and flash count from the start
+    /// including it (Fatman — sound at frame 58, hit at tick 68).
     anim_hold: u32 = 0,
+    /// The next `play` switches without the transition (+0x31e8, 0x4233c6; cleared by it,
+    /// 0x4235f6): DisableInterpolation, hit reaction, stance idle and others.
+    instant: bool = false,
+    /// A one-shot ended with commands queued: the queue runs first and the idle is picked
+    /// after it only if no command became current (0x4265d7…0x4265fb; `runQueue`).
+    idle_due: bool = false,
+    /// Movement waits for the transition to end (ActorQueueWaitForInterpolation, command
+    /// 0x1d: done once +0x19 != 2, 0x424e5f).
+    hold_blend: bool = false,
+    /// Model frame drawn before the last `play` (+0x8, the transition's start pose) and
+    /// the frame drawn last (set each tick by `noteShown`).
+    blend_from: u32 = 0,
+    last_frame: u32 = 0,
+    /// Shift (model axes) and turn of the off-place animation that just ended (+0x2fb0,
+    /// +0x2fa0, 0x42671d): position and angle already took them, so the next `play` takes
+    /// them out of the start pose (`blend_shift`, 0x423439…0x4235c3) — else the body jumps
+    /// ahead and the matrix lerp across the turn squashes the model.
+    off_place: [4]f32 = @splat(0),
+    blend_shift: [4]f32 = @splat(0),
+    /// The drawn bone matrices, two buffers like the player's +0x10/+0x14: the viewer
+    /// writes each drawn pose into `poses[pose_drawn]` (+0x4); a `play` mid-transition
+    /// starts the next one from that pose (`pose_from`, +0x8 = +0x4, 0x44f9e2) instead
+    /// of `blend_from`, and the next draw writes the other buffer (0x44fe00).
+    poses: [2]std.ArrayList([12]f32) = .{ .empty, .empty },
+    pose_drawn: u1 = 0,
+    pose_from: ?u1 = null,
     loop: bool = true,
     /// One-shot animation: return to idle when it ends.
     one_shot: bool = false,
@@ -137,6 +182,12 @@ pub const Actor = struct {
     anim_paused: bool = false,
     /// IDLE_ANIMATION set by a scene, instead of a random pick.
     forced_idle: ?[]const u8 = null,
+    /// IDLE_OFF (+0x30ec, command 0x26): no idle is picked (0x422fa2); an ended
+    /// animation stays on its last frame.
+    idle_off: bool = false,
+    /// RegisterExtraBody (0x422a50, slots +0x2e64, 0x44 each): more meshes drawn in the
+    /// actor's place; `still` (flag ≠ 0) — they don't play its animation (0x4233ec).
+    extra_bodies: [4]?ExtraBody = @splat(null),
 
     angle_offset: f32 = 0,
     /// Model screen bounds in background pixels (last drawn frame; +0x64…+0x70).
@@ -160,6 +211,10 @@ pub const Actor = struct {
     /// Attached to another actor (AttachActorsByLink, 0x4bf8e0): offset in the parent's
     /// mesh axes (chunk 11 shift + attachment point, mesh units) and the point angle (+0x30).
     attached_to: ?*Object = null,
+    /// LinkActor (0x42ab60): the parent draws this actor at its mesh point (0x4297b4 —
+    /// point matrix 0x4290f0, then this actor's mesh in its own animation), the actor
+    /// itself is not drawn or shadowed (link count +0x2f7c: 0x42b210, 0x42a080).
+    link_point: ?@import("formats.zig").mesh.HoldMode = null,
     link_offset: [3]f32 = .{ 0, 0, 0 },
     link_angle: f32 = 0,
     /// Vibrato(actor, amplitude, speed) (0x4cd9c0, tick 0x4cda90): vertical draw offset
@@ -203,6 +258,8 @@ pub const Actor = struct {
         self.path.deinit(gpa);
         self.path_events.deinit(gpa);
         self.path_z.deinit(gpa);
+        for (&self.poses) |*p| p.deinit(gpa);
+        for (&self.extra_bodies) |*eb| if (eb.*) |*b| for (&b.poses) |*p| p.deinit(gpa);
     }
 
     /// Walk speed with animation `anim` (0x422f58): its logical name's slot —
@@ -369,10 +426,29 @@ pub const Actor = struct {
             }
         }
         self.mute_cues = false;
+        self.idle_due = false;
+        // 0x44f910: the same animation still running goes on (+0x19 == 1; the actor
+        // restarts a looping one itself when it ends); ended or mid-transition it restarts
+        // without one. Shortcut: only looping ones count as running here, a non-looping
+        // replay restarts (no model length at hand).
+        const same = std.ascii.eqlIgnoreCase(anim, self.anim);
+        if (!(same and loop and self.loop and self.anim_hold == 0)) {
+            self.anim_ticks = 0;
+            self.cue_fresh = true;
+        }
         self.anim = anim;
-        self.anim_ticks = 0;
-        self.anim_hold = 0;
-        self.cue_fresh = true;
+        // 0x44f9dc: mid-transition (+0x19 == 2) the new one starts from the drawn pose.
+        self.pose_from = if (self.anim_hold > 0 and self.poses[self.pose_drawn].items.len > 0) self.pose_drawn else null;
+        // A moving extra body's player gets the same call (0x423409): its own start pose.
+        for (&self.extra_bodies) |*eb| if (eb.*) |*b| if (!b.still) {
+            b.pose_from = if (self.anim_hold > 0 and b.poses[b.pose_drawn].items.len > 0) b.pose_drawn else null;
+            b.blend_from = b.last_frame;
+        };
+        self.anim_hold = if (same or self.instant) 0 else blend_ticks;
+        self.instant = false;
+        self.blend_from = self.last_frame;
+        self.blend_shift = self.off_place;
+        self.off_place = @splat(0);
         self.loop = loop;
         self.one_shot = one_shot;
         self.reverse = false;
@@ -405,7 +481,7 @@ pub const Actor = struct {
     /// Shock (state 2, 0x491c91): a "current" pass for `ticks` ticks.
     /// Shock shake, 30 ticks.
     pub fn shock(self: *Actor) void {
-        const ticks = 30;
+        const ticks: u32 = @intCast(@max(0, adjust.getInt("attack_shocker_shocked_timeout", 30)));
         if (self.fx == .appear or self.fx == .vanish) return;
         self.fx = .shock;
         self.fx_ticks = ticks;
@@ -429,16 +505,17 @@ pub const Actor = struct {
 
     pub fn tickFx(self: *Actor) void {
         if (self.corpse) |*t| if (!self.one_shot) {
-            if (t.* < 30) t.* += 1 else {
+            if (t.* < adjust.getInt("actor_fade_delay", 30)) t.* += 1 else {
                 // An invisible monster fades without materialization.
                 if (self.invisible) self.fx = .none;
-                if (self.alpha < 3) self.gone = true;
-                self.alpha -|= 3;
+                const speed: u8 = @intCast(std.math.clamp(adjust.getInt("fighter_fade_speed", 3), 0, 255));
+                if (self.alpha < speed) self.gone = true;
+                self.alpha -|= speed;
             }
         };
         if (self.morph_left > 0) {
             self.morph_left -= 1;
-            self.alpha -|= 14;
+            self.alpha -|= @intCast(std.math.clamp(adjust.getInt("morf_add", 14), 0, 255));
             if (self.morph_left == 0) {
                 self.alpha = 255;
                 self.morph_due = true;
@@ -464,15 +541,43 @@ pub const Actor = struct {
 
     /// Model frame for the current animation (reversed: from the last frame to the first).
     pub fn frameIn(self: Actor, m: *const model_cache.Model) u32 {
+        // A name the model lacks (Mac Fadden's idle "jo_g_idle"): the animation shown before.
+        // The player never loops by itself (+0x18 = 0 in every 0x44f910 call): a looping
+        // one is restarted by the actor replaying its name, which now misses — so it runs
+        // to its last frame and stays there (0x44fce8; Slavsky's walk before "su_idle").
+        if (self.anim.len > 0 and m.anims.find(self.anim) == null) if (m.anims.find(self.shown.anim)) |a| {
+            const len: f32 = @floatFromInt(a.last - a.first + 1);
+            const t = if (self.shown.loop) @mod(@floor(self.shown.ticks), len) else self.shown.ticks;
+            return a.shown(m.frameOf(self.shown.anim, t + self.anim_ticks, false), self.shown.reverse);
+        };
         const f = m.frameOf(self.anim, self.anim_ticks, self.loop);
         const a = m.anims.find(self.anim) orelse return f;
         return a.shown(f, self.reverse);
+    }
+
+    /// Each tick: the animation, if the model has it, is the one it shows (drawn on when a
+    /// later name isn't in the model; the actor's own logic still treats that one as ended).
+    pub fn noteShown(self: *Actor, m: *const model_cache.Model) void {
+        self.last_frame = self.frameIn(m);
+        if (self.anim.len == 0 or m.anims.find(self.anim) == null) return;
+        self.shown = .{ .anim = self.anim, .ticks = self.anim_ticks, .loop = self.loop, .reverse = self.reverse };
+    }
+
+    /// Transition ticks (0x44f910 with length 8: +0x20 = 1/9, +0x1c from −1/9).
+    pub const blend_ticks: u32 = 10;
+
+    /// Weight of the new animation's frame over `blend_from` while a transition runs
+    /// (0x44fdc0: +0x1c + +0x20, capped at 1 — 0, 1/9 … 1 after each tick); null after it.
+    pub fn blendWeight(self: Actor) ?f32 {
+        if (self.anim_hold == 0) return null;
+        return @min(1, @as(f32, @floatFromInt(blend_ticks -| self.anim_hold)) / @as(f32, @floatFromInt(blend_ticks - 1)));
     }
 
     /// Animation from the queue (ActorQueueWalkAnimation); false if the queue is empty.
     pub fn playQueued(self: *Actor) bool {
         const q = self.queued_anim orelse return false;
         self.queued_anim = null;
+        if (self.queued_instant) self.instant = true;
         self.play(self.resolve(q), false, true);
         self.reverse = self.queued_reverse;
         return true;
@@ -480,6 +585,8 @@ pub const Actor = struct {
 
     /// Random idle animation of the current state (weighted).
     pub fn pickIdle(self: *Actor, rand: *Rand) void {
+        self.idle_due = false;
+        if (self.idle_off) return; // 0x422fa2: before the forced idle too
         if (self.forced_idle) |a| return self.play(a, true, false);
         const n = self.idle_count[self.state];
         if (n == 0) {
@@ -576,6 +683,63 @@ test "animation slots and walk speeds follow the exe logical-name table" {
     try std.testing.expectEqual(@as(u8, 0), a.idle_count[9]);
 }
 
+test "play blends into another animation unless instant; the same looping one runs on (0x44f910)" {
+    var a: Actor = .{};
+    a.play("walk", true, false);
+    try std.testing.expectEqual(Actor.blend_ticks, a.anim_hold);
+    a.anim_hold = 0;
+    a.anim_ticks = 5;
+    a.play("walk", true, false);
+    try std.testing.expectEqual(@as(f32, 5), a.anim_ticks);
+    try std.testing.expectEqual(@as(u32, 0), a.anim_hold);
+    a.instant = true;
+    a.play("idle", false, false);
+    try std.testing.expect(a.anim_hold == 0 and !a.instant and a.anim_ticks == 0);
+    a.play("hit", false, true);
+    a.play("hit", false, true); // mid-blend into the same one: restart without it
+    try std.testing.expectEqual(@as(u32, 0), a.anim_hold);
+    // Interrupted transition: the next starts from the pose drawn (0x44f9e2), else a frame.
+    defer a.deinit(std.testing.allocator);
+    try a.poses[1].append(std.testing.allocator, @splat(1));
+    a.pose_drawn = 1;
+    a.play("walk", true, false);
+    try std.testing.expectEqual(@as(?u1, null), a.pose_from);
+    a.play("idle", false, false);
+    try std.testing.expectEqual(@as(?u1, 1), a.pose_from);
+    // An off-place end's shift goes to the next transition only (0x423439, cleared 0x4235cb).
+    a.off_place = .{ 3, 0, 4, 1 };
+    a.play("look", false, true);
+    try std.testing.expectEqual([4]f32{ 3, 0, 4, 1 }, a.blend_shift);
+    a.play("idle", false, false);
+    try std.testing.expectEqual([4]f32{ 0, 0, 0, 0 }, a.blend_shift);
+}
+
+test "an animation the model lacks leaves the one shown running (0x44f910)" {
+    var items = [_]@import("formats.zig").anim.Animation{.{ .name = "g_idle", .first = 10, .last = 19, .speed = 1, .sounds = &.{} }};
+    var m: model_cache.Model = undefined;
+    m.anims = .{ .arena = undefined, .items = &items };
+    var a: Actor = .{};
+    a.play("g_idle", false, false);
+    a.anim_ticks = 4;
+    a.noteShown(&m);
+    a.play("jo_g_idle", false, false); // Mac Fadden's idle her model doesn't have
+    a.noteShown(&m);
+    try std.testing.expectEqual(@as(u32, 14), a.frameIn(&m));
+    a.play("jo_g_look", false, false); // picked again: still the last frame shown
+    try std.testing.expectEqual(@as(u32, 14), a.frameIn(&m));
+
+    // A looping one (walk) plays out its cycle, then holds its last frame (0x44fce8).
+    a.play("g_idle", true, false);
+    a.anim_ticks = 23; // third cycle, frame 3
+    a.noteShown(&m);
+    a.play("su_idle", true, false); // Slavsky's IDLE_ANIMATION his model doesn't have
+    a.anim_ticks = 2;
+    try std.testing.expectEqual(@as(u32, 15), a.frameIn(&m));
+    a.anim_ticks = 100;
+    try std.testing.expectEqual(@as(u32, 19), a.frameIn(&m));
+}
+
 test {
     _ = camera;
+    _ = gltf;
 }

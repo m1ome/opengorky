@@ -52,14 +52,32 @@ pub fn setHoldState(w: *World, hero: *Object, weapon: ?*Object) void {
     a.weapon_detached = false; // 0x42b305/0x42ac30: reattach
     const was = a.state;
     a.setState(@intFromBool(two and combat), combat);
-    // Empty queue: switch to the new stance's idle at once (0x42b3a4 → 0x422f90).
-    if (a.state != was and !a.busy()) a.pickIdle(w.crt());
+    // Empty queue: switch to the new stance's idle at once, no blend (0x42b3a4 → 0x42b3af,
+    // 0x422f90).
+    if (a.state != was and !a.busy()) {
+        a.instant = true;
+        a.pickIdle(w.crt());
+    }
 }
 
 /// Hero stance from the weapon in hand.
 pub fn refreshHold(w: *World, hero: *Object) void {
     const hand = equipped(w, hero, .hand);
     setHoldState(w, hero, if (hand) |h| (if (World.nativeOf(h).kind == .weapon) h else null) else null);
+}
+
+/// The inventory leaves its hero (0x42dd40: closing, 0x42dd70, or showing another,
+/// 0x42e27c): unless defending (+0x248f0), +0x31e8 = 1, stance (0x42b300: 0, the weapon's,
+/// with an empty queue its idle at once, 0x42b3a4), then idle again (0x422f90) — that one
+/// blends unless the stance's idle didn't play.
+pub fn leaveInventory(w: *World, hero: *Object) void {
+    if (w.battle) |*b| if (b.fighterOf(hero)) |i| if (b.fighters.items[i].defending) return;
+    const a = world.actorOf(hero);
+    a.instant = true;
+    if (a.holdState()) a.setState(0, w.isCombat());
+    refreshHold(w, hero);
+    if (a.instant and a.queue.items.len == 0) a.pickIdle(w.crt());
+    a.pickIdle(w.crt());
 }
 
 /// Stance of all heroes (level entry, load), and in battle of any actor holding a weapon

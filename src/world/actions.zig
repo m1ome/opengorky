@@ -109,6 +109,9 @@ fn areaOperation(self: *World, area: *Object, hero: *Object, action: u8) !void {
         _ = try self.rt.callIfExists(area, "LevelSwitch", &.{});
         return;
     }
+    // Explore on a non-empty area (the chief's safe after its code): the box window, as
+    // for item boxes (0x457340); the scripts have no Explore() of their own.
+    if (id == 7 and area.getInt("cnt_itm") > 0) return inventory.box.exploreBox(self, area, hero);
     const name = state_groups.operationName(id) orelse return;
     _ = try self.rt.callIfExists(area, name, &.{.{ .string = hero.name }});
 }
@@ -126,6 +129,11 @@ pub fn enterSafeCode(self: *World, code: i32) !void {
     const area = self.act.safe_box orelse return;
     self.act.safe_box = null;
     _ = try self.rt.callIfExists(area, "CheckCode", &.{.{ .int = code }});
+    // The right code opens the door (funcID 7): the contents show once it has swung, as
+    // after opening a box.
+    if (area.getInt("funcID") == 7 and area.getInt("cnt_itm") > 0) if (self.selectedHero()) |hero| {
+        self.act.pending_explore = .{ .box = area, .hero = hero, .ticks = 8 };
+    };
 }
 
 /// The hero arrived at an area or item: run its function.

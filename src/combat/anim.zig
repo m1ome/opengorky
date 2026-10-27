@@ -33,14 +33,28 @@ pub fn walkStraight(w: *World, f: *Fighter, to: Tile) void {
 
 /// Angle to the opponent (0x48f02e…0x48f0d1): from grid axis `rot`, a = atan2 +
 /// 2π − rot; a remainder mod π/2 above π/4 goes to the next multiple, else down;
-/// mod 2π, plus `rot`.
-pub fn snapAngle(raw: f32, rot: f32) f32 {
+/// mod 2π, plus `rot`. In the exe's precision: `raw` from x87 fpatan (here f64), `a`
+/// stored as a float (0x48f06b), fmod and the π/4 test in double. A placement on an
+/// exact diagonal lands on π/4 and only that rounding decides the quarter (all-f32
+/// math turned 04__city_trapatthetruck's needle3 sideways).
+pub fn snapAngle(raw: f64, rot: f32) f32 {
     const pi = std.math.pi;
     const step = pi * 0.5;
-    var a = raw + 2 * pi - rot;
-    const r = @mod(a, step);
-    a = if (r > pi * 0.25) a - r + step else a - r;
-    return @mod(a, 2 * pi) + rot;
+    const a: f32 = @floatCast(raw + 2 * pi - @as(f64, rot));
+    // `a` > 0, so @mod is fmod (0x4f741a).
+    const r = @mod(@as(f64, a), step);
+    const s: f32 = @floatCast(if (r > pi * 0.25) (step - r) + a else a - r);
+    return @floatCast(@mod(@as(f64, s), 2 * pi) + @as(f64, rot));
+}
+
+test "snapAngle: a placement on the exact diagonal rounds as the exe does" {
+    // 04__city_trapatthetruck: needle3 (2×2 at 0,13) and Trantigne at 5,18 — (5, 5) tiles apart.
+    const lf = @import("../formats.zig").level_files;
+    const cm: lf.CombatMap = .{ .center = .{ 3323.302979, -7874.714844, -365 }, .rotation = 0.02, .cell_size = .{ 387.5, 387.5 }, .width = 8, .height = 24, .blocked = &.{}, .heights = &.{} };
+    const me = cm.toWorld(1, 14);
+    const to = cm.toWorld(5.5, 18.5);
+    const raw = std.math.atan2(@as(f64, to[1]) - me[1], @as(f64, to[0]) - me[0]);
+    try std.testing.expectApproxEqAbs(@as(f32, std.math.pi / 2.0 + 0.02), snapAngle(raw, 0.02), 1e-5);
 }
 
 test "snapAngle rounds to the grid's quarter turns" {
@@ -74,17 +88,20 @@ pub fn beginAttackAnim(w: *World, f: Fighter, wpn: *Object) void {
     const a = world_mod.actorOf(f.obj);
     // An invisible monster (0x48a2a6) appears before the strike.
     if (a.invisible) a.materialize(true);
-    var anim = attackAnim(f, wpn);
-    // Smoke Rider with weapon 1004 (0x489ec2, callback 21 = 0x487698): long_attack
-    // right after ladder_start if at least two actors are linked to it (+0x30d4 > 1:
-    // pilots, LinkActor 0x4c1c50 → 0x42ab60); otherwise ladder_start.
+    const anim = attackAnim(f, wpn);
+    // Smoke Rider with weapon 1004 (0x489ec2): it plays ladder_start, and callback 21
+    // (0x487698) after attack_smokerider_shot2_delay makes its second linked actor
+    // (+0x3534, LinkActor 0x4c1c50 → 0x42ab60: the gunner smoke_pilot_2) play
+    // long_attack if more than one is linked (+0x30d4 > 1).
+    // shortcut: played at the start, as the shipped shot2_delay is 0; schedule it if a mod sets more.
     if (fields.nameId(f.obj) == 110 and fields.nameId(wpn) == 1004) {
         var linked: u32 = 0;
         for (w.rt.objects.items) |o| {
             const n = World.nativeOf(o);
-            if (n.kind == .actor and n.actor.attached_to == f.obj) linked += 1;
+            if (n.kind != .actor or n.actor.attached_to != f.obj) continue;
+            linked += 1;
+            if (linked == 2) n.actor.play(n.actor.resolve("long_attack"), false, true);
         }
-        if (linked < 2) anim = "ladder_start";
     }
     a.play(a.resolve(anim), false, true);
     // Queued as async command 0x14 (0x428980): the strike's waits and "attack over"
@@ -94,13 +111,20 @@ pub fn beginAttackAnim(w: *World, f: Fighter, wpn: *Object) void {
     // frame sounds (0x4230c0 → 0x44f910 → [anim+0x30]); instead of the pistol shot,
     // dartsgun.wav plays at the shot (callback 0x27).
     if (f.side == .hero and fields.nameId(wpn) == 45) a.mute_cues = true;
-    // Blend into the strike animation: 10 ticks on the first frame (0x44f910, length
-    // 8); strike delays (adjust.kdt) count from the start including this blend.
-    a.anim_hold = attack_blend_ticks;
+    // `play` blends into the strike: 10 ticks on the first frame (0x44f910, length 8);
+    // strike delays (adjust.kdt) count from the start including this blend.
 }
 
 /// Blend ticks into a strike animation: length 8 → +0x1c from −1/9 in steps of 1/9 to 1.
-const attack_blend_ticks = 10;
+const attack_blend_ticks = @import("../actor.zig").Actor.blend_ticks;
+
+/// Strike animation frame (from its first) shown when the hit and its muzzle flash come
+/// `wait` ticks after the start: the hit fires on tick wait + 1 (stepPending runs before
+/// the actors' frame step), the frame moves once a tick (0x4266da → 0x44fae0, `.ani`
+/// speed unused) after the blend.
+pub fn hitFrame(wait: u32) u32 {
+    return (wait + 1) -| attack_blend_ticks;
+}
 
 /// Logical attack animation name: heroes by weapon nameID (0x48bda2), monsters
 /// by their own branch (0x48d618).
@@ -136,6 +160,7 @@ pub fn schizoPair(w: *World, f: Fighter) ?[2]*Object {
 /// mesh by the point name, 0x44f910 plays it); the saw's "obrot" is the only use.
 pub fn spinLink(w: *World, o: *Object, link: []const u8) void {
     for (world_mod.actorOf(o).links.items) |*l| if (std.ascii.eqlIgnoreCase(l.link, link)) {
+        l.blend = l.anim.len == 0;
         l.anim = "obrot";
         l.anim_from = w.ticks;
     };
@@ -145,4 +170,9 @@ pub fn spinLink(w: *World, o: *Object, link: []const u8) void {
 pub fn restoreHold(w: *World, f: Fighter) void {
     world_mod.actorOf(f.obj).setState(0, true);
     inventory.equipment.refreshHold(w, f.obj);
+}
+
+test "strike hit frame: Fatman's sound frame 58 meets the hit on tick 68" {
+    try @import("std").testing.expectEqual(@as(u32, 58), hitFrame(67));
+    try @import("std").testing.expectEqual(@as(u32, 31), hitFrame(40)); // pistol, attack_dartgun_delay
 }

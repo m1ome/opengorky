@@ -68,101 +68,94 @@ pub fn parseArgs(args: []const [:0]const u8) !Options {
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const a = args[i];
-        const has_value = i + 1 < args.len;
-        if (std.mem.eql(u8, a, "--image") and has_value) {
-            i += 1;
-            opts.image = try std.fmt.parseInt(usize, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--shot") and has_value) {
-            i += 1;
-            opts.shot = args[i];
-        } else if (std.mem.eql(u8, a, "--time") and has_value) {
-            i += 1;
-            opts.time_ms = try std.fmt.parseInt(u64, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--scroll") and has_value) {
-            i += 1;
-            opts.scroll = try pair(args[i]);
-        } else if (std.mem.eql(u8, a, "--walk") and has_value) {
-            i += 1;
-            opts.walk_layer = try std.fmt.parseInt(u2, args[i], 10);
+        const value: ?[]const u8 = if (i + 1 < args.len) args[i + 1] else null;
+        // Options that are not one field of their own name.
+        if (std.mem.eql(u8, a, "--time") and value != null) {
+            opts.time_ms = try std.fmt.parseInt(u64, value.?, 10);
+        } else if (std.mem.eql(u8, a, "--scroll") and value != null) {
+            opts.scroll = try pair(value.?);
+        } else if (std.mem.eql(u8, a, "--walk") and value != null) {
+            opts.walk_layer = try std.fmt.parseInt(u2, value.?, 10);
             if (opts.walk_layer > 2) return error.BadArgs;
-        } else if (std.mem.eql(u8, a, "--video") and has_value) {
-            i += 1;
-            opts.video = args[i];
-        } else if (std.mem.eql(u8, a, "--dev")) {
-            opts.dev = true;
-        } else if (std.mem.eql(u8, a, "--console") and has_value) {
-            i += 1;
+        } else if (std.mem.eql(u8, a, "--console") and value != null) {
             if (opts.n_console < opts.console_cmds.len) {
-                opts.console_cmds[opts.n_console] = args[i];
+                opts.console_cmds[opts.n_console] = value.?;
                 opts.n_console += 1;
             }
-        } else if (std.mem.eql(u8, a, "--model-scale") and has_value) {
-            i += 1;
-            opts.debug.scale_tweak = try std.fmt.parseFloat(f32, args[i]);
-        } else if (std.mem.eql(u8, a, "--heroes")) {
-            opts.heroes = true;
-        } else if (std.mem.eql(u8, a, "--load-slot") and has_value) {
-            i += 1;
-            opts.load_slot = try std.fmt.parseInt(usize, args[i], 10);
-            if (opts.load_slot == 0) return error.BadArgs; // slots start at 1
+        } else if (std.mem.eql(u8, a, "--model-scale") and value != null) {
+            opts.debug.scale_tweak = try std.fmt.parseFloat(f32, value.?);
+        } else if (std.mem.eql(u8, a, "--window") and value != null) {
+            var it = std.mem.splitScalar(u8, value.?, ',');
+            opts.window = .{ try std.fmt.parseInt(c_int, it.next() orelse "1280", 10), try std.fmt.parseInt(c_int, it.next() orelse "960", 10) };
         } else if (std.mem.eql(u8, a, "--shadow-debug")) {
             opts.debug.shadow_debug = true;
+            continue;
         } else if (std.mem.eql(u8, a, "--no-depth")) {
             opts.debug.no_depth = true;
+            continue;
         } else if (std.mem.eql(u8, a, "--no-layer-cache")) {
             opts.debug.layer_cache = false;
-        } else if (std.mem.eql(u8, a, "--play")) {
-            opts.play = true;
-        } else if (std.mem.eql(u8, a, "--window") and has_value) {
-            i += 1;
-            var it = std.mem.splitScalar(u8, args[i], ',');
-            opts.window = .{ try std.fmt.parseInt(c_int, it.next() orelse "1280", 10), try std.fmt.parseInt(c_int, it.next() orelse "960", 10) };
-        } else if (std.mem.eql(u8, a, "--upscale") and has_value) {
-            i += 1;
-            opts.upscale = std.meta.stringToEnum(config.Upscale, args[i]);
-        } else if (std.mem.eql(u8, a, "--hires") and has_value) {
-            i += 1;
-            opts.hires = try std.fmt.parseInt(u32, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--no-sfx")) {
-            opts.no_sfx = true;
-        } else if (std.mem.eql(u8, a, "--mute")) {
-            opts.mute = true;
-        } else if (std.mem.eql(u8, a, "--perf")) {
-            opts.perf = true;
-        } else if (std.mem.eql(u8, a, "--active")) {
-            opts.active = true;
-        } else if (std.mem.eql(u8, a, "--fps") and has_value) {
-            i += 1;
-            opts.fps = try std.fmt.parseInt(u32, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--quit-after") and has_value) {
-            i += 1;
-            opts.quit_after = try std.fmt.parseInt(u64, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--auto-detail")) {
-            opts.auto_detail = true;
-        } else if (std.mem.eql(u8, a, "--frames") and has_value) {
-            i += 1;
-            opts.frames = try std.fmt.parseInt(u32, args[i], 10);
-        } else if (std.mem.eql(u8, a, "--frames-dir") and has_value) {
-            i += 1;
-            opts.frames_dir = args[i];
-        } else if (std.mem.eql(u8, a, "--input") and has_value) {
-            i += 1;
-            opts.input = args[i];
-        } else if (std.mem.eql(u8, a, "--areas")) {
-            opts.areas = true;
-        } else if (std.mem.eql(u8, a, "--hide-objects")) {
-            opts.hide_objects = true;
-        } else if (std.mem.eql(u8, a, "--level")) {
-            opts.level = true;
-        } else if (game_dir == null) {
-            game_dir = a;
+            continue;
+        } else if (try setField(&opts, a, value)) |took| {
+            i += took;
+            continue;
         } else {
-            opts.archive = a;
+            if (game_dir == null) game_dir = a else opts.archive = a;
+            continue;
         }
+        i += 1;
     }
+    if (opts.load_slot == 0) return error.BadArgs; // slots start at 1
     // No path: main takes it from opengorky.cfg (game_path).
     opts.game_dir = game_dir orelse "";
     return opts;
+}
+
+/// `--some-name [value]` into field `some_name` of a plain type (a flag sets a bool;
+/// numbers, strings and enums take the value); how many values it took, null if no
+/// such option.
+fn setField(opts: *Options, flag: []const u8, value: ?[]const u8) !?usize {
+    const info = @typeInfo(Options).@"struct";
+    inline for (info.field_names, info.field_types) |fname, T| {
+        const name = comptime blk: {
+            var n: [fname.len + 2]u8 = undefined;
+            @memcpy(n[0..2], "--");
+            for (fname, 2..) |ch, k| n[k] = if (ch == '_') '-' else ch;
+            const out = n;
+            break :blk &out;
+        };
+        if (comptime plain(T)) if (std.mem.eql(u8, flag, name)) {
+            if (T == bool) {
+                @field(opts, fname) = true;
+                return 0;
+            }
+            @field(opts, fname) = try parseValue(T, value orelse return error.BadArgs);
+            return 1;
+        };
+    }
+    return null;
+}
+
+/// Types `setField` sets (the rest have their own branches).
+fn plain(comptime T: type) bool {
+    const U = switch (@typeInfo(T)) {
+        .optional => |o| o.child,
+        else => T,
+    };
+    return switch (@typeInfo(U)) {
+        .bool, .int, .@"enum" => true,
+        .pointer => U == []const u8,
+        else => false,
+    };
+}
+
+fn parseValue(comptime T: type, s: []const u8) !T {
+    return switch (@typeInfo(T)) {
+        .optional => |o| try parseValue(o.child, s),
+        .int => try std.fmt.parseInt(T, s, 10),
+        .@"enum" => std.meta.stringToEnum(T, s) orelse error.BadArgs,
+        else => s,
+    };
 }
 
 /// "X,Y" → a pair of numbers; missing parts are 0.

@@ -115,7 +115,7 @@ pub fn levelPaths(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8,
 }
 
 /// Put Sullivan at a background point and send him to the target; movement log.
-pub fn walkTest(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, level: []const u8, from: [2]f32, to: [2]f32) !void {
+pub fn walkTest(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, level: []const u8, from: [2]f32, to: [2]f32, party: bool) !void {
     var dat = try common.openDat(io, game_dir, .{});
     defer dat.close(io);
     var models = try og.actor.model_cache.Cache.open(io, gpa, dat);
@@ -140,7 +140,9 @@ pub fn walkTest(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, l
             if (r0) |r| gpa.free(r);
         }
     }
-    try og.world.route.walkTo(world, hero, to);
+    if (party) {
+        _ = try og.world.walk.partyWalk(world, hero, to);
+    } else try og.world.route.walkTo(world, hero, to);
     try out.print("path: {d} points\n", .{a.path.items.len});
     for (a.path.items, 0..) |pt, k| {
         const z = if (k < a.path_z.items.len) a.path_z.items[k] else -999;
@@ -151,18 +153,49 @@ pub fn walkTest(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, l
         };
         try out.print("  {d}: bg {d:.0},{d:.0} z {d:.0}\n", .{ k, q.x, q.y, z });
     }
+    // Who is measured: the hero, or the whole party walking with it.
+    const members = world.party();
+    const walkers: []const *og.script.object.Object = if (party) members.slice() else &.{hero};
+    // Per walker: ticks moved, and of them with the facing more than 90° off the step —
+    // in the world (XY) and on the screen (walking backwards as seen).
+    var moved: [8]u32 = @splat(0);
+    var backwards: [8]u32 = @splat(0);
+    var screen_back: [8]u32 = @splat(0);
     var last_anim: []const u8 = "";
     var last_map: u1 = 0;
     for (0..3000) |t| {
+        var before: [8][3]f32 = undefined;
+        for (walkers[0..@min(walkers.len, 8)], 0..) |h, k| before[k] = og.fields.pos(h);
         try og.game.tick(world);
+        var busy = false;
+        for (walkers[0..@min(walkers.len, 8)], 0..) |h, k| {
+            busy = busy or world_mod.actorOf(h).busy();
+            const after = og.fields.pos(h);
+            if (after[0] == before[k][0] and after[1] == before[k][1]) continue;
+            moved[k] += 1;
+            const ang = og.fields.angle(h);
+            const step = og.fields.facing(after[0] - before[k][0], after[1] - before[k][1]);
+            if (@abs(og.fields.angleDiff(step, ang)) > std.math.pi / 2.0) backwards[k] += 1;
+            const f = og.fields.forwardOf(ang);
+            const q0 = world.cam.project(after);
+            const q1 = world.cam.project(.{ after[0] + f[0] * 20, after[1] + f[1] * 20, after[2] });
+            const qb = world.cam.project(before[k]);
+            const mx = q0.x - qb.x;
+            const my = q0.y - qb.y;
+            if (mx * mx + my * my > 0.01 and mx * (q1.x - q0.x) + my * (q1.y - q0.y) < 0) {
+                screen_back[k] += 1;
+                try out.print("[{d:>4}] {s} walks backwards on screen: at bg {d:.0},{d:.0} z {d:.0}, facing {d:.2}\n", .{ t, h.name, q0.x, q0.y, after[2], ang });
+            }
+        }
         const sp = world.screenPos(hero);
         if (!std.mem.eql(u8, a.anim, last_anim) or a.map != last_map or t % 60 == 0) {
             try out.print("[{d:>4}] bg {d:.0},{d:.0} z {d:.1} anim {s} floor {d} point {d}/{d}\n", .{ t, sp[0], sp[1], og.fields.getF(hero, "z"), a.anim, a.map, a.path_index, a.path.items.len });
             last_anim = a.anim;
             last_map = a.map;
         }
-        if (!a.busy() and t > 5) break;
+        if (!busy and t > 5) break;
     }
+    for (walkers[0..@min(walkers.len, 8)], 0..) |h, k| try out.print("{s}: moved {d} ticks, backwards {d} (world), {d} (screen)\n", .{ h.name, moved[k], backwards[k], screen_back[k] });
 }
 
 pub fn runWorld(io: Io, gpa: Allocator, out: *Io.Writer, game_dir: []const u8, level: []const u8, ticks: u32) !void {

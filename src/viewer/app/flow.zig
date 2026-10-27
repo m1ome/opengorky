@@ -75,13 +75,19 @@ fn afterLoad(self: *Viewer) void {
     } else if (l.cameraGoal()) |goal| camera_view.scrollBy(self, goal[0], goal[1]);
 }
 
-/// "Try again": the same battle again with the party as it entered.
+/// "Try again" (0x4542c0): the same battle again with the party as it entered; outside
+/// battle the "battle" save (no battle entered yet: plays on, the exe finds no file).
 fn retryBattle(self: *Viewer) !void {
     const cur = &(self.level orelse return);
-    if (!cur.world.isCombat()) return;
-    cur.deinit();
-    self.level = null;
-    _ = try self.game.retry();
+    if (cur.world.isCombat()) {
+        cur.deinit();
+        self.level = null;
+        _ = try self.game.retry();
+    } else {
+        if (self.game.battle_save == null) return;
+        self.closeAll();
+        _ = try self.game.reloadBattle();
+    }
     try showWorld(self, false);
 }
 
@@ -106,7 +112,7 @@ pub fn menuAction(self: *Viewer, action: @import("../menu/items.zig").Action) !v
         .exit => self.quit = true,
         .retry_battle => {
             retryBattle(self) catch |err| std.log.err("retry: {t}", .{err});
-            m.open = false;
+            if (self.level == null) m.show(.main) else m.open = false;
         },
         // Save (0x4157fc → 0x415830): "keyaccept", the menu closes.
         .save => |k| {
@@ -128,6 +134,7 @@ pub fn menuAction(self: *Viewer, action: @import("../menu/items.zig").Action) !v
 pub fn gameOverChoose(v: *Viewer, yes: bool) !void {
     const g = v.gui orelse return;
     gui_battle.clearGameOver(g);
+    if (v.level) |*l| l.world.flow.defeat_ticks = null;
     v.uiSound("click");
     try menuAction(v, if (yes) .retry_battle else .main_menu);
 }

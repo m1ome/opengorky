@@ -209,8 +209,10 @@ pub fn run(init: std.process.Init) !void {
     v.cfg_dir = cfg_dir;
     v.cfg_path = cfg_path;
     if (cfg.fullscreen and opts.shot == null) _ = c.SDL_SetWindowFullscreen(window, true);
-    if (bank) |*b| v.sound = .{ .bank = b, .mixer = &mixer, .params = startup.loadSoundParams(io, gpa, game) };
-    v.shadows = startup.loadShadows(io, gpa, game);
+    og.formats.adjust.load(io, game);
+    @import("../level.zig").grid_mode = @intCast(std.math.clamp(og.formats.adjust.getInt("grid_mode", 0), 0, 2));
+    if (bank) |*b| v.sound = .{ .bank = b, .mixer = &mixer, .params = startup.loadSoundParams() };
+    v.shadows = startup.loadShadows();
     v.debug = opts.debug;
     var models: ?og.actor.model_cache.Cache = og.actor.model_cache.Cache.open(io, gpa, dat) catch null;
     defer if (models) |*m| m.deinit();
@@ -315,6 +317,8 @@ pub fn run(init: std.process.Init) !void {
             if (v.menu) |m| m.open = false;
         }
     }
+    // Console commands given (`--console "scene name"`): run once the level is up, as in shots.
+    for (opts.console_cmds[0..opts.n_console]) |cmd| @import("commands.zig").consoleRun(&v, cmd);
     var ev_ctx: input_ctx.Ctx = .{ .window = window.?, .renderer = renderer.?, .io = io, .mixer = &mixer, .opts = &opts };
     defer if (opts.perf) {
         var pb: [512]u8 = undefined;

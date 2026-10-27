@@ -18,8 +18,12 @@ const model_cache = og.actor.model_cache;
 const menu_items = @import("menu/items.zig");
 
 // adjust.kdt constants (defaults).
-const start_y: f32 = 220; // MENU_START_Y
-const h_space: f32 = 47; // MENU_H_SPACE
+fn startY() f32 {
+    return @floatFromInt(og.formats.adjust.getInt("MENU_START_Y", 220));
+}
+fn hSpace() f32 {
+    return @floatFromInt(og.formats.adjust.getInt("MENU_H_SPACE", 47));
+}
 
 /// Credits line: a heading (a line with ":") or a name. A `#N` line in `credits.inf`
 /// (0x42c773) is not shown; it sets the letter set for the following lines.
@@ -277,8 +281,8 @@ pub const Menu = struct {
     pub fn offset(self: *Menu) f32 {
         return switch (self.screen) {
             .main, .ingame, .credits => 0,
-            .load, .save, .options => h_space,
-            .sound, .graphics => 2 * h_space,
+            .load, .save, .options => hSpace(),
+            .sound, .graphics => 2 * hSpace(),
         };
     }
 
@@ -330,7 +334,7 @@ pub const Menu = struct {
     /// Baseline of item k: 220 + offset + 47·(k − first visible).
     pub fn itemY(self: *Menu, k: usize) f32 {
         const f = self.visible()[0];
-        return start_y + self.offset() + h_space * (og.num.toF32(k) - og.num.toF32(f));
+        return startY() + self.offset() + hSpace() * (og.num.toF32(k) - og.num.toF32(f));
     }
 
     /// Slider (0x508434): volume 0..100 step 1, gamma 0..400 step 5.
@@ -455,7 +459,7 @@ pub const Menu = struct {
             const w = self.font.width(self.label(it, &buf));
             const y = self.itemY(k);
             const l = @floor((640 - w) / 2); // integer (640 − w) / 2 (0x415bc2)
-            if (mx >= l - 32 and mx <= l + w + 32 and my >= y + 8 - h_space and my <= y + 8) return k;
+            if (mx >= l - 32 and mx <= l + w + 32 and my >= y + 8 - hSpace() and my <= y + 8) return k;
         }
         return null;
     }
@@ -486,7 +490,7 @@ pub const Menu = struct {
         if (self.tick_ms == 0 or now -% self.tick_ms > 200) self.tick_ms = now;
         while (now -% self.tick_ms >= tick_len_ms) {
             self.tick_ms +%= tick_len_ms;
-            self.pulse_phase += gfx.tile_flash_step;
+            self.pulse_phase += gfx.tileFlashStep();
             if (self.screen == .load or self.screen == .save) self.hoverTick(mouse);
             if (self.hold_key != 0) {
                 stepSlider(self);

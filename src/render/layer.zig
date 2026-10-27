@@ -138,6 +138,8 @@ pub const Layer = struct {
     /// actor's floor plane (z of its position) into the 512×512 mask without a depth test;
     /// 80×60 tiles touched by the shadow remember the floor height (the first actor wins).
     pub fn castShadow(self: *Layer, arena: Allocator, cam: camera.Camera, model: *const Model, p: Placement, light: [3]f32, all_parts: bool) !void {
+        // Zeroed planes (`.2s`): no triangle faces the light (0x41aa3a, s ≤ 1e-4).
+        if (model.two_sided) return;
         const zg = p.pos[2];
         if (light[2] <= zg + 1) return;
         const frame = @min(p.frame, model.frames.frames -| 1);
@@ -446,8 +448,10 @@ pub const Layer = struct {
         /// transformation).
         alpha: f32 = 1,
         depth_write: bool = true,
-        /// Shift toward the camera as a fraction of depth (items on surfaces — bed,
-        /// table: the background depth fit is accurate to ~2%, otherwise the item sinks).
+        /// Shift toward the camera as a fraction of depth, in the depth test only
+        /// (items on surfaces — bed, table: the background depth fit is accurate to
+        /// ~2%, otherwise the item sinks). Draw such models before the ones they
+        /// must sort against: their true depth is written.
         depth_bias: f32 = 0,
         /// The model itself is not drawn (materialization at v < 0.6), only the passes.
         hidden: bool = false,
@@ -545,6 +549,14 @@ pub const Layer = struct {
         try self.drawParts(arena, cam, at.model, wpts, s, .{ .pos = p.pos, .angle = p.angle, .scale = p.scale, .frame = 0, .alpha = p.alpha, .depth_write = p.depth_write, .hidden = p.hidden }, model);
     }
 
+    /// Back face skipped as the exe does (0x447460, 0x446f20): plane n = (P0−P1)×(P2−P1)
+    /// with n·E + d > 0 for the eye E (n·dir for an orthographic view) — the same as
+    /// the projected triangle's winding (screen y down; checked on both cameras: the
+    /// other sign turns closed models inside out).
+    fn backFacing(sp: [3][3]f32) bool {
+        return (sp[1][0] - sp[0][0]) * (sp[2][1] - sp[0][1]) - (sp[1][1] - sp[0][1]) * (sp[2][0] - sp[0][0]) > 0;
+    }
+
     /// Model triangles from points `pts` (mesh units). `frame_of` — whose local
     /// transform (rotation and shift, 0x44c060) applies: the actor's for weapons.
     /// Lighting (0x4c6bc0, 0x47e1f0): the vertex normal is minus the sum of face normals
@@ -587,12 +599,13 @@ pub const Layer = struct {
                     const q = cam.project(world[t[i]]);
                     const lx = q.x - self.origin[0];
                     const ly = q.y - self.origin[1];
-                    sp[i] = .{ lx * ssf, ly * ssf, -q.depth - p.depth_bias * @abs(q.depth) };
+                    sp[i] = .{ lx * ssf, ly * ssf, -q.depth };
                     if (frame_of == null) self.bbox = .{ @min(self.bbox[0], lx), @min(self.bbox[1], ly), @max(self.bbox[2], lx), @max(self.bbox[3], ly) };
                     uv[i] = part.vertices[t[i]].uv;
                     col[i] = cols[t[i]];
                 }
-                if (!p.hidden) self.canvas.triangleShaded(sp, uv, model.texture, col, .{ .alpha = p.alpha, .depth_write = p.depth_write, .mips = model.mips });
+                if (!model.two_sided and backFacing(sp)) continue;
+                if (!p.hidden) self.canvas.triangleShaded(sp, uv, model.partTexture(pi), col, .{ .alpha = p.alpha, .depth_write = p.depth_write, .mips = model.partMips(pi), .test_bias = p.depth_bias });
                 if (frame_of != null) continue;
                 for (p.overlays) |ov| if (ov) |o| {
                     self.canvas.triangleShaded(sp, uv, o.tex, raster.gray(1), .{ .add = &self.glow, .uv_scale = o.uv_scale, .uv_offset = o.uv_offset, .wrap = o.wrap });

@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const Rand = @import("../crt_rand.zig").Rand;
+const adjust = @import("../formats.zig").adjust;
 const Object = @import("../script.zig").object.Object;
 
 pub const Bitmap = struct {
@@ -107,6 +108,13 @@ pub const Morph = struct {
     /// from 4·aS.
     pub fn init(pos: [3]f32, angle: f32, mesh: []const u8, anim: []const u8, as: f32, rand: *Rand) Morph {
         var m: Morph = .{ .pos = pos, .angle = angle, .mesh = mesh, .anim = anim, .as = as, .parts = undefined };
+        // morf_gr, morf_dr (0x425b0b), morf_life (0x425ace); morf_delay and morf_sint come
+        // through the actor's morph (0x42b672, 0x42b6ae).
+        m.p = adjust.getFloat("morf_gr", 0.6);
+        m.dr = adjust.getFloat("morf_dr", 0.03);
+        m.life = adjust.getInt("morf_life", 30);
+        m.delay = @intCast(@max(0, adjust.getInt("morf_delay", 30)));
+        m.alpha = @intCast(std.math.clamp(adjust.getInt("morf_sint", 50), 0, 255));
         for (&m.parts) |*pt| {
             const a: f32 = @floatFromInt(rand.below(32));
             const b: f32 = @floatFromInt(rand.below(32));
@@ -128,8 +136,8 @@ pub const Morph = struct {
         if (self.p > 1) {
             self.p = 1;
             self.dr = -self.dr;
-        } else if (self.p < 0.6) {
-            self.p = 0.6;
+        } else if (self.p < adjust.getFloat("morf_gr", 0.6)) {
+            self.p = adjust.getFloat("morf_gr", 0.6);
             self.dr = -self.dr;
         }
         if (self.counter % 4 == 0) for (&self.parts) |*pt| if (!pt.active) {
@@ -148,7 +156,7 @@ pub const Morph = struct {
         }
         self.life -= 1;
         if (self.life < 0) self.done = true;
-        self.alpha = @min(255, self.alpha + 14);
+        self.alpha = @min(255, self.alpha + @as(u32, @intCast(std.math.clamp(adjust.getInt("morf_add", 14), 0, 255))));
         self.anim_ticks += 1;
         return !self.done;
     }

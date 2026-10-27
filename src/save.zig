@@ -40,6 +40,12 @@ const ObjState = struct {
     deleted: bool,
     placed: bool,
     hero: bool,
+    /// IDLE_OFF (+0x30ec): the exe saves it as the Actor property `disableIdleAnims`
+    /// (0x46a020 → 0x45fdc0). Flag 16; older saves lack it (off).
+    idle_off: bool = false,
+    /// IDLE_ANIMATION (+0x30ed, char[16]): the exe saves it as `idleAnimOverride`
+    /// (empty = none). Line `idle`; older saves lack it.
+    idle_anim: []const u8 = "",
     map: u1,
     state: u8,
     stat_points: i32,
@@ -97,6 +103,8 @@ pub const Save = struct {
                 .deleted = n.deleted,
                 .placed = n.actor.placed,
                 .hero = n.hero,
+                .idle_off = n.actor.idle_off,
+                .idle_anim = try a.dupe(u8, n.actor.forced_idle orelse ""),
                 .map = n.actor.map,
                 .state = n.actor.state,
                 .stat_points = n.growth.stat_points,
@@ -136,7 +144,7 @@ pub const Save = struct {
         for (self.worlds.items) |ws| {
             try out.print("world {s}\n", .{ws.level});
             for (ws.objects) |o| {
-                const flags: u8 = @as(u8, @intFromBool(o.enabled)) | @as(u8, @intFromBool(o.deleted)) << 1 | @as(u8, @intFromBool(o.placed)) << 2 | @as(u8, @intFromBool(o.hero)) << 3;
+                const flags: u8 = @as(u8, @intFromBool(o.enabled)) | @as(u8, @intFromBool(o.deleted)) << 1 | @as(u8, @intFromBool(o.placed)) << 2 | @as(u8, @intFromBool(o.hero)) << 3 | @as(u8, @intFromBool(o.idle_off)) << 4;
                 try out.print("obj {s} {s} {t} {d} {d} {d} {d}\n", .{ o.name, o.class_file, o.kind, flags, o.map, o.state, o.stat_points });
                 for (o.vars) |v| {
                     try out.print("var {s} ", .{v.name});
@@ -152,6 +160,7 @@ pub const Save = struct {
                 }
                 for (o.skills) |sk| try out.print("skill {d} {d} {d}\n", .{ sk.id, sk.level, sk.count });
                 if (o.anim.len > 0) try out.print("anim {d} {s}\n", .{ @intFromBool(o.anim_reverse), o.anim });
+                if (o.idle_anim.len > 0) try out.print("idle {s}\n", .{o.idle_anim});
             }
             for (ws.walk) |wa| try out.print("walk {d} {d} {s}\n", .{ @intFromBool(wa.allow), wa.floor, wa.name });
             try out.writeAll("end\n");
@@ -218,6 +227,7 @@ pub const Save = struct {
                     .deleted = flags & 2 != 0,
                     .placed = flags & 4 != 0,
                     .hero = flags & 8 != 0,
+                    .idle_off = flags & 16 != 0,
                     .map = @intCast(map & 1),
                     .state = state,
                     .stat_points = try std.fmt.parseInt(i32, it.next() orelse "0", 10),
@@ -241,6 +251,8 @@ pub const Save = struct {
                 const last = &objs.items[objs.items.len - 1];
                 last.anim_reverse = !std.mem.eql(u8, rest[0..sp2], "0");
                 last.anim = try a.dupe(u8, rest[sp2 + 1 ..]);
+            } else if (std.mem.eql(u8, key, "idle")) {
+                if (objs.items.len > 0) objs.items[objs.items.len - 1].idle_anim = try a.dupe(u8, rest);
             } else if (std.mem.eql(u8, key, "skill")) {
                 var it = std.mem.tokenizeScalar(u8, rest, ' ');
                 try skills.append(a, .{
@@ -362,7 +374,7 @@ test "save round trip" {
         .{ .name = "accuracy", .value = .{ .float = 90.5 } },
         .{ .name = "owner", .value = .{ .string = "Sul livan\\x\n" } },
     });
-    const objs = try a.dupe(ObjState, &.{.{ .name = "sullivan", .class_file = "sullivan.hro", .kind = .actor, .enabled = true, .deleted = false, .placed = true, .hero = true, .map = 1, .state = 0, .stat_points = 5, .vars = vars, .skills = try a.dupe(state_object.Skill, &.{.{ .id = 49, .level = 3 }}) }});
+    const objs = try a.dupe(ObjState, &.{.{ .name = "sullivan", .class_file = "sullivan.hro", .kind = .actor, .enabled = true, .deleted = false, .placed = true, .hero = true, .idle_off = true, .idle_anim = "deliriumA", .map = 1, .state = 0, .stat_points = 5, .vars = vars, .skills = try a.dupe(state_object.Skill, &.{.{ .id = 49, .level = 3 }}) }});
     try s.worlds.append(a, .{ .level = "01_port", .objects = objs });
     var buf: std.Io.Writer.Allocating = .init(gpa);
     defer buf.deinit();
@@ -372,6 +384,8 @@ test "save round trip" {
     try std.testing.expectEqualStrings("01_port", back.current);
     const o = back.worlds.items[0].objects[0];
     try std.testing.expectEqual(1, o.map);
+    try std.testing.expect(o.idle_off and o.hero);
+    try std.testing.expectEqualStrings("deliriumA", o.idle_anim);
     try std.testing.expectEqual(5, o.stat_points);
     try std.testing.expectEqual(42, o.vars[0].value.int);
     try std.testing.expectEqualStrings("Sul livan\\x\n", o.vars[2].value.string);

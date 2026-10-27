@@ -13,6 +13,7 @@ const gui_short = @import("../gui/short.zig");
 const gui_panel = @import("../gui/panel.zig");
 const camera_view = @import("../level/camera.zig");
 const battle_view = @import("../battle/view.zig");
+const gui_battle = @import("../battle/gui.zig");
 const devices_mod = og.combat.devices;
 const turns_mod = og.combat.turns;
 const scenes_mod = og.scene.scenes;
@@ -32,6 +33,13 @@ pub fn mouseDown(v: *Viewer, ctx: *Ctx, ev: c.SDL_Event) !Flow {
     // Point allocation is modal; ± and Accept act on the LMB press edge (0x404810(1), 0x4af890).
     if (v.gui) |g| if (g.stats.modal) {
         if (ev.button.button == c.SDL_BUTTON_LEFT) if (v.level) |*l| gui_stats.statsClick(g, l.world, ev.button.x, ev.button.y);
+        return .next;
+    };
+    // The battle report is modal: a press only works its scrollbar (its Close acts on release).
+    if (v.gui) |g| if (g.report_open) {
+        if (ev.button.button == c.SDL_BUTTON_LEFT) if (v.level) |*l| {
+            _ = gui_battle.reportPress(g, l.world, ev.button.x, ev.button.y);
+        };
         return .next;
     };
     if (v.inventory) |inv| inv.press_at = if (ev.button.button == c.SDL_BUTTON_LEFT) .{ ev.button.x, ev.button.y } else null;
@@ -95,7 +103,10 @@ pub fn mouseUp(v: *Viewer, ctx: *Ctx, ev: c.SDL_Event) !Flow {
         if (ev.button.button == c.SDL_BUTTON_LEFT) try flow.gameOverChoose(v, g.go_sel == 0);
         return .next;
     };
-    if (v.gui) |g| g.short_drag = false;
+    if (v.gui) |g| {
+        g.short_drag = false;
+        g.report_drag = false;
+    }
     if (v.inventory) |inv| if (inv.open and ev.button.button != c.SDL_BUTTON_LEFT) return .next;
     if (v.video != null) {
         v.stopVideo(true);
@@ -243,6 +254,7 @@ pub fn motion(v: *Viewer, ctx: *Ctx, ev: c.SDL_Event) !Flow {
     if (v.level) |*l| {
         if (v.inventory) |inv| if (inv.open) inv.motion(l.world, v.mouse[1]);
         if (v.gui) |g| if (g.short_drag) gui_short.shortDrag(g, l.world, v.mouse[1]);
+        if (v.gui) |g| if (g.report_drag) gui_battle.reportDrag(g, l.world, v.mouse[1]);
     }
     if (!ctx.dragging) return .next;
     ctx.drag_dist += @abs(ev.motion.xrel) + @abs(ev.motion.yrel);

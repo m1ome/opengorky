@@ -18,7 +18,6 @@ const world_mod = @import("../state.zig").world;
 const World = world_mod.World;
 const rules = @import("../battle.zig").rules;
 const grid = @import("../battle.zig").grid;
-const fx = @import("../fx.zig");
 const Fighter = @import("../battle.zig").fighter.Fighter;
 const Side = @import("../battle.zig").fighter.Side;
 const roster = @import("roster.zig");
@@ -113,7 +112,7 @@ pub fn stepSeq(self: *Battle, w: *World) !void {
     // Bombs one at a time (0x498650): after a blast the camera stays on its tile for
     // 90 ticks, then the rest.
     if (s.bombs) {
-        if (try bombs.tickBombs(self, w)) {
+        if (try bombs.tickDevices(self, w)) {
             s.delay = 90;
             return;
         }
@@ -318,6 +317,7 @@ pub fn endTurn(self: *Battle, w: *World) !void {
     self.enemy_period = true;
     self.seq = .{ .side = .enemy, .delay = 80, .bombs = true };
     for (self.bombs.items) |*bomb| bomb.ticked = false;
+    bombs.chargeTurn(self);
     devices.refreshDecoys(self);
     self.phase = .enemy;
     self.enemy_cursor = 0;

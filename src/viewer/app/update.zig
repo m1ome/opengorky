@@ -106,6 +106,10 @@ pub fn update(v: *Viewer) void {
         if (l.world.battle) |*b| if (b.phase == .lost and b.over_ticks >= 90) if (v.gui) |g| if (g.go_frame == null and !g.go_capture) {
             g.go_capture = true;
         };
+        // The same screen from a scene's GUI_GAMEOVER.
+        if ((l.world.flow.defeat_ticks orelse 0) >= 90) if (v.gui) |g| if (g.go_frame == null and !g.go_capture) {
+            g.go_capture = true;
+        };
         // Victory (0x454880): the engine queues the jingle at 90 ticks; after
         // another 150, back to the level where the battle began (AfterBattle).
         // The report (0x451d70) opens after the banner; once closed, go back.

@@ -13,13 +13,18 @@ const camera = @import("../actor.zig").camera;
 /// Returns (far, tl, tolerance).
 pub fn fitPersp(cam: camera.Persp, cm: level_files.CombatMap, z: zbuffer.ZBuffer) ?[3]f32 {
     var pts: [fit.max_points][3]f32 = undefined;
+    return fitPerspPoints(cam, gridPoints(cm, &pts), z);
+}
+
+/// Floor points of a battle grid: centres of the free cells.
+pub fn gridPoints(cm: level_files.CombatMap, pts: [][3]f32) [][3]f32 {
     var n: usize = 0;
     for (0..cm.height) |j| for (0..cm.width) |i| {
         if (cm.blocked[j * cm.width + i] or n == pts.len) continue;
         pts[n] = cm.toWorld(num.toF32(i) + 0.5, num.toF32(j) + 0.5);
         n += 1;
     };
-    return fitPerspPoints(cam, pts[0..n], z);
+    return pts[0..n];
 }
 
 /// Background depth fit to our camera — our own compensation with no exe counterpart
@@ -120,6 +125,30 @@ pub fn fitPerspPoints(cam: camera.Persp, pts: []const [3]f32, z: zbuffer.ZBuffer
 /// .zbf step (see `fit`). null when fewer than `fit.min_points` points.
 pub fn perspTolerance(cam: camera.Persp, pts: []const [3]f32, z: zbuffer.ZBuffer, far: f32, tl: f32) ?f32 {
     var res: [fit.max_points]f32 = undefined;
+    const n = residuals(cam, pts, z, far, tl, &res);
+    if (n < fit.min_points) return null;
+    std.mem.sort(f32, res[0..n], {}, std.sort.asc(f32));
+    const lim = fit.limit(res[0..n]);
+    var m: usize = 0;
+    while (m < n and res[m] <= lim) m += 1;
+    return @max(res[m * 9 / 10], tl * fit.zbf_step / 65536);
+}
+
+/// Largest floor residual up to 2·`tol` for given far and tl: how far the background
+/// floor strays from our camera's beyond the tolerance (a raised platform, rejected
+/// as an outlier against a flat floor's median, still lies within it; residuals
+/// beyond are objects). Shadow planes need it, see the viewer's depth.shadowBias.
+pub fn perspSpread(cam: camera.Persp, pts: []const [3]f32, z: zbuffer.ZBuffer, far: f32, tl: f32, tol: f32) f32 {
+    var res: [fit.max_points]f32 = undefined;
+    var m: f32 = 0;
+    for (res[0..residuals(cam, pts, z, far, tl, &res)]) |r| if (r <= 2 * tol) {
+        m = @max(m, r);
+    };
+    return m;
+}
+
+/// Floor residuals |depth − W(v)| into `res`; their count.
+fn residuals(cam: camera.Persp, pts: []const [3]f32, z: zbuffer.ZBuffer, far: f32, tl: f32, res: *[fit.max_points]f32) usize {
     var n: usize = 0;
     for (pts) |wp| {
         if (n == res.len) break;
@@ -127,10 +156,52 @@ pub fn perspTolerance(cam: camera.Persp, pts: []const [3]f32, z: zbuffer.ZBuffer
         res[n] = @abs(sm.depth - level.perspDepth(far, tl, sm.v));
         n += 1;
     }
-    if (n < fit.min_points) return null;
-    std.mem.sort(f32, res[0..n], {}, std.sort.asc(f32));
-    const lim = fit.limit(res[0..n]);
-    var m: usize = 0;
-    while (m < n and res[m] <= lim) m += 1;
-    return @max(res[m * 9 / 10], tl * fit.zbf_step / 65536);
+    return n;
+}
+
+/// Line y = a·x + b through points (x, y) by least squares, refitted once without
+/// the fifth of points farthest from the first line (objects standing on the floor).
+/// The editor maps a painted depth onto the exe's W-buffer with it. null: under 3
+/// points or all x equal.
+pub fn lineFit(pts: [][2]f32) ?[2]f32 {
+    var ab = lineOnce(pts) orelse return null;
+    const Ctx = struct { ab: [2]f32 };
+    std.mem.sort([2]f32, pts, Ctx{ .ab = ab }, struct {
+        fn lt(c: Ctx, p: [2]f32, q: [2]f32) bool {
+            return @abs(c.ab[0] * p[0] + c.ab[1] - p[1]) < @abs(c.ab[0] * q[0] + c.ab[1] - q[1]);
+        }
+    }.lt);
+    ab = lineOnce(pts[0 .. pts.len - pts.len / 5]) orelse ab;
+    return ab;
+}
+
+fn lineOnce(pts: []const [2]f32) ?[2]f32 {
+    if (pts.len < 3) return null;
+    var sx: f64 = 0;
+    var sy: f64 = 0;
+    var sxx: f64 = 0;
+    var sxy: f64 = 0;
+    for (pts) |p| {
+        sx += p[0];
+        sy += p[1];
+        sxx += @as(f64, p[0]) * p[0];
+        sxy += @as(f64, p[0]) * p[1];
+    }
+    const n: f64 = @floatFromInt(pts.len);
+    const den = n * sxx - sx * sx;
+    if (@abs(den) < 1e-9) return null;
+    const a = (n * sxy - sx * sy) / den;
+    return .{ @floatCast(a), @floatCast((sy - a * sx) / n) };
+}
+
+test lineFit {
+    var pts: [10][2]f32 = undefined;
+    for (&pts, 0..) |*p, i| {
+        const x: f32 = @floatFromInt(i);
+        p.* = .{ x, 2 * x + 1 };
+    }
+    pts[3][1] = 100; // a crate on the floor
+    const ab = lineFit(&pts).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 2), ab[0], 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), ab[1], 1e-3);
 }

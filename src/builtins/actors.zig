@@ -4,8 +4,8 @@ const std = @import("std");
 const fields = @import("../fields.zig");
 const popup_mod = @import("../popup.zig");
 const areas = @import("../world.zig").areas;
-const floor_mod = @import("../world.zig").floor;
 const queue = @import("../world.zig").queue;
+const walk = @import("../world.zig").walk;
 const bitmap_anim = @import("../world.zig").bitmap_anim;
 const level_files = @import("../formats.zig").level_files;
 const actor_mod = @import("../actor.zig");
@@ -16,6 +16,7 @@ const Object = @import("../script.zig").object.Object;
 const Runtime = runtime.Runtime;
 const Value = @import("../script.zig").value.Value;
 const args_mod = @import("args.zig");
+const inventory = @import("../inventory.zig");
 
 /// ABA_Impulse("object") (0x4c03b0 → 0x4b4400(0)): the script passes no lock.
 pub fn biAbaImpulse(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []const Value) anyerror!Value {
@@ -63,19 +64,8 @@ pub fn biPlaceActor(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []const Val
         return .{ .int = 1 };
     }
     if (args[1] != .string or args[2] != .int) return .zero;
-    // Reset the queue, path and command first (0x422b73 → 0x427c10).
-    world_mod.actorOf(o).dropCommands(w.crt());
-    const area = areas.findArea(w, args[1].string) orelse return .{ .int = 1 };
-    // Point index outside the area: the actor doesn't move (0x422b99).
-    if (args[2].int < 0 or args[2].int >= area.points.len) return .{ .int = 1 };
-    const p = area.points[@intCast(args[2].int)];
     // The fourth argument is the floor (0x422c00): height from the `.wm`/`.wm2` cell.
-    const floor: i32 = if (args.len > 3 and args[3] == .int) args[3].int else 0;
-    const map: u1 = if (floor == 1) 1 else 0;
-    world_mod.actorOf(o).map = map;
-    fields.setPos(o, floor_mod.groundOn(w, map, .{ p[0], p[1] }));
-    fields.setAngle(o, p[2]);
-    world_mod.actorOf(o).placed = true;
+    queue.placeAtPoint(w, o, args[1].string, args[2].int, if (args.len > 3 and args[3] == .int) args[3].int else 0);
     return .{ .int = 1 };
 }
 
@@ -116,8 +106,9 @@ pub fn biActorSetAsyncAnimation(ctx: *anyopaque, rt: *Runtime, _: *Object, args:
     const o = args_mod.targetObject(ctx, rt, args) orelse return .zero;
     if (!world_mod.isActor(o) or args.len < 2 or args[1] != .string) return .zero;
     const a = world_mod.actorOf(o);
-    // Reverse only with an integer fourth argument (0x4c0c0a); the third (no blend,
-    // 0x4c0c16 → 0x428b00) is unused here: we have no blending.
+    // Reverse only with an integer fourth argument (0x4c0c0a); the third 1 queues
+    // command 0x18 (no blend) before it (0x4c0c16 → 0x428b00).
+    if (flagArg(args, 2)) try a.queue.append(w.gpa, .no_blend);
     try a.queue.append(w.gpa, .{ .async_anim = .{ .name = args[1].string, .reverse = args.len > 3 and args[3] == .int and args[3].int != 0 } });
     try queue.runQueue(w, o, a);
     return .zero;
@@ -145,6 +136,77 @@ pub fn biActorActivateLink(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []co
 pub fn biActorDeactivateAllLinks(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const o = args_mod.targetObject(ctx, rt, args) orelse return .zero;
     if (world_mod.isActor(o)) world_mod.actorOf(o).links.clearRetainingCapacity();
+    return .zero;
+}
+
+/// DeactivateLink("point") (0x4bf740 → 0x42aea0 with no mesh → 0x42ac30): the point of
+/// the current actor loses its mesh.
+pub fn biDeactivateLink(_: *anyopaque, _: *Runtime, self: *Object, args: []const Value) anyerror!Value {
+    if (!world_mod.isActor(self) or args.len < 1 or args[0] != .string) return .zero;
+    const links = &world_mod.actorOf(self).links;
+    for (links.items, 0..) |l, i| if (std.ascii.eqlIgnoreCase(l.link, args[0].string)) {
+        _ = links.orderedRemove(i);
+        break;
+    };
+    return .zero;
+}
+
+/// RegisterExtraBody(slot, flag, "mesh") (0x4bf400 → 0x422a50): types strictly int, int,
+/// string; slot 0..3 of the current actor gets the mesh (the old one is released), flag
+/// ≠ 0 keeps it out of the actor's animation.
+pub fn biRegisterExtraBody(ctx: *anyopaque, _: *Runtime, self: *Object, args: []const Value) anyerror!Value {
+    if (!world_mod.isActor(self) or args.len < 3 or args[0] != .int or args[1] != .int or args[2] != .string) return .zero;
+    if (args[0].int < 0 or args[0].int >= 4) return .zero; // 0x422a56
+    const w = args_mod.worldOf(ctx);
+    const mesh = try w.arena_state.allocator().dupe(u8, args[2].string);
+    const slot = &world_mod.actorOf(self).extra_bodies[@intCast(args[0].int)];
+    if (slot.*) |*old| for (&old.poses) |*p| p.deinit(w.gpa);
+    slot.* = .{ .mesh = mesh, .still = args[1].int != 0 };
+    return .zero;
+}
+
+/// Actor_QueueState(actor, state) (0x4c0a60 → 0x427c70, command 0x22): only (string,
+/// int); in battle 0/1 become 7/8.
+pub fn biActorQueueState(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
+    const w = args_mod.worldOf(ctx);
+    if (args.len < 2 or args[0] != .string or args[1] != .int) return .zero;
+    const o = w.actorObject(args[0].string) orelse return .zero;
+    try world_mod.actorOf(o).queue.append(w.gpa, .{ .state = args_mod.clampState(args[1]) });
+    return .zero;
+}
+
+/// ActorPutBackItem(actor) (0x4c0330 → 0x42b050): a two-handed item in hand (+0x3250,
+/// +0x350 == 1) goes on the back: "hide_back", links off, its mesh on "back", state 0.
+/// ActorPutFrontItem(actor) (0x4c0370 → 0x42b0c0) takes it back: after the blend, links
+/// off, state 1, "hide_back" backwards without waiting, 30 ticks, mesh on "two_hands".
+pub fn biActorPutBackItem(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
+    return putItem(args_mod.worldOf(ctx), args, false);
+}
+
+pub fn biActorPutFrontItem(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
+    return putItem(args_mod.worldOf(ctx), args, true);
+}
+
+fn putItem(w: *World, args: []const Value, front: bool) !Value {
+    if (args.len < 1 or args[0] != .string) return .zero;
+    const o = w.actorObject(args[0].string) orelse return .zero;
+    const item = inventory.equipment.equipped(w, o, .hand) orelse return .zero;
+    if (item.getInt("two_handed") != 1) return .zero;
+    const mesh = try w.arena_state.allocator().dupe(u8, fields.meshFile(item));
+    const cmds: []const actor_mod.command.Command = if (front) &.{
+        .wait_blend,
+        .unlink,
+        .{ .state = 1 },
+        .{ .async_anim = .{ .name = "hide_back", .reverse = true } },
+        .{ .delay = 30 },
+        .{ .link = .{ .link = "two_hands", .mesh = mesh } },
+    } else &.{
+        .{ .anim = "hide_back" },
+        .unlink,
+        .{ .link = .{ .link = "back", .mesh = mesh } },
+        .{ .state = 0 },
+    };
+    try world_mod.actorOf(o).queue.appendSlice(w.gpa, cmds);
     return .zero;
 }
 
@@ -204,8 +266,8 @@ pub fn biActorSetWalkSpeed(_: *anyopaque, _: *Runtime, self: *Object, args: []co
     return .zero;
 }
 
-/// Actor_SetAnimation(name, "anim"[, noBlend]) (0x427e40): the third argument
-/// switches without blending (command 0x18); we have no blending.
+/// Actor_SetAnimation(name, "anim"[, noBlend]) (0x427e40): the third argument 1
+/// queues command 0x18 before it (0x4c0d28): no blending into it.
 pub fn biActorSetAnimation(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const o = args_mod.targetObject(ctx, rt, args) orelse return .zero;
     if (!world_mod.isActor(o) or args.len < 2 or args[1] != .string) return .zero;
@@ -217,16 +279,19 @@ pub fn biActorSetAnimation(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []co
         .idle
     else
         .{ .anim = try w.arena_state.allocator().dupe(u8, args[1].string) };
+    if (flagArg(args, 2)) try a.queue.append(w.gpa, .no_blend);
     try a.queue.append(w.gpa, cmd);
     try queue.runQueue(w, o, a);
     return .zero;
 }
 
-/// Actor_SetState(name, state, ...).
+/// Actor_SetState(name, state[, instant]) (0x4c09f0).
 pub fn biActorSetState(ctx: *anyopaque, rt: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const o = args_mod.targetObject(ctx, rt, args) orelse return .zero;
     if (!world_mod.isActor(o) or args.len < 2) return .zero;
     const a = world_mod.actorOf(o);
+    // Third argument 1: the idle below without the blend (0x4c0a3b).
+    if (flagArg(args, 2)) a.instant = true;
     a.setState(args_mod.clampState(args[1]), args_mod.worldOf(ctx).isCombat()); // 0x42b450
     a.forced_idle = null;
     if (!a.busy()) a.pickIdle(args_mod.worldOf(ctx).crt());
@@ -256,12 +321,39 @@ pub fn biAttachActorsByLink(ctx: *anyopaque, _: *Runtime, _: *Object, args: []co
     return .zero;
 }
 
-/// LinkActor(actor, "point") (0x4c1c50): link the actor to the calling object
-/// (bike pilots in the port yard battle), like AttachActorsByLink(this, …).
-pub fn biLinkActor(ctx: *anyopaque, rt: *Runtime, self: *Object, args: []const Value) anyerror!Value {
-    if (args.len < 2) return .zero;
-    const full = [_]Value{ .{ .string = self.name }, args[0], args[1] };
-    return biAttachActorsByLink(ctx, rt, self, &full);
+/// AttachActors(parent, actor, a, b, c, angle) (0x4bf800): AttachActorsByLink with the
+/// offset and angle given (four floats, 0x4bf821…): a, b horizontal in the parent's
+/// axes (the order ByLink stores the mesh z, x in, 0x4bf9e2), c height, in world units.
+pub fn biAttachActors(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
+    const w = args_mod.worldOf(ctx);
+    if (args.len < 6 or args[0] != .string or args[1] != .string) return .zero;
+    for (args[2..6]) |v| if (v != .float) return .zero;
+    const parent = w.actorObject(args[0].string) orelse return .zero;
+    const child = w.actorObject(args[1].string) orelse return .zero;
+    // followParent scales the offset by the parent's mesh scale × actorScale (life.zig).
+    const pm = if (w.res.models) |m| m.get(fields.meshFile(parent)) else null;
+    const s = w.actorScale() * if (pm) |m| m.unitScale() else 24;
+    const a = world_mod.actorOf(child);
+    a.attached_to = parent;
+    a.link_offset = .{ args[3].float / s, args[4].float / s, args[2].float / s };
+    a.link_angle = args[5].float;
+    a.placed = true;
+    return .zero;
+}
+
+/// LinkActor("point", actor) (0x4c1c50 → 0x42ab60(point, actor)): the actor rides
+/// the calling object at that point of its mesh — the Smoke Rider's two pilots
+/// (01cy_smokerider.ftr: LinkActor("pilot1","smoke_pilot_1")). No point: no link.
+pub fn biLinkActor(ctx: *anyopaque, _: *Runtime, self: *Object, args: []const Value) anyerror!Value {
+    if (args.len < 2 or !world_mod.isActor(self)) return .zero;
+    const w = args_mod.worldOf(ctx);
+    const child = w.actorObject(args_mod.argString(args, 1)) orelse return .zero;
+    const models = w.res.models orelse return .zero;
+    const model = models.get(fields.meshFile(self)) orelse return .zero;
+    const a = world_mod.actorOf(child);
+    a.link_point = model.mesh.holdMode(args_mod.argString(args, 0)) orelse return .zero;
+    a.attached_to = self;
+    return .zero;
 }
 
 /// ActorModifyScale(k) (0x4bf5c0): the calling actor's model scale ×k.
@@ -290,26 +382,7 @@ pub fn biWalkOnSceneryTrack(ctx: *anyopaque, _: *Runtime, _: *Object, args: []co
     const w = args_mod.worldOf(ctx);
     if (args.len < 2) return .zero;
     const o = w.actorObject(args_mod.argString(args, 0)) orelse return .zero;
-    const area = areas.findArea(w, args_mod.argString(args, 1)) orelse return .zero;
-    if (area.points.len == 0) return .zero;
-    const a = world_mod.actorOf(o);
-    a.clearPath();
-    const h: f32 = if (args.len > 2) args[2].toFloat() else 0;
-    const start: usize = if (args.len > 3 and args[3] == .int) @min(@as(usize, @intCast(@max(0, args[3].toInt()))), area.points.len - 1) else 0;
-    const p0 = area.points[start];
-    const wp0 = w.cam.unproject(p0[0], p0[1], h);
-    fields.setPos(o, wp0);
-    fields.setAngle(o, p0[2]);
-    for (area.points[start + 1 ..]) |p| {
-        const wp = w.cam.unproject(p[0], p[1], h);
-        try a.path.append(w.gpa, .{ wp[0], wp[1] });
-    }
-    a.move_speed = a.speedOf("walk") * w.speedScale();
-    // The exe queues the points as commands 0x11; the first actor tick only starts the
-    // queue (0x4265bc → 0x423680, no step), so the track moves from the second tick.
-    a.delay = 1;
-    a.on_track = true;
-    a.placed = true;
+    try walk.sceneryTrack(w, o, args_mod.argString(args, 1), if (args.len > 2) args[2].toFloat() else 0, if (args.len > 3 and args[3] == .int) args[3].int else 0);
     return .zero;
 }
 
@@ -347,30 +420,41 @@ pub fn biActorSetWalkAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, args: [
 
 /// ActorAnimation("anim", a, b, reverse) (0x4bfa70 → command 0x13): one-shot
 /// animation, movement waits for its end; 4th argument 1 plays it backwards. Flags
-/// a and b (command 0x18 before and after) disable blending, which we don't have.
+/// a and b = 1 queue command 0x18 (no blend) before and after it (0x4bfab3, 0x4bfb10).
 pub fn biActorAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const a = args_mod.nodeActor(ctx) orelse return .zero;
+    if (flagArg(args, 1)) a.instant = true;
     a.play(a.resolve(args_mod.argString(args, 0)), false, true);
+    if (flagArg(args, 2)) a.instant = true;
     a.reverse = args_mod.reverseFlag(args);
     a.hold_move = true;
     return .zero;
+}
+
+/// Int argument `i` equal to 1 (0x4c6510 == 1 after the type check).
+fn flagArg(args: []const Value, i: usize) bool {
+    return args.len > i and args[i] == .int and args[i].int == 1;
 }
 
 /// ActorAsyncAnimation("anim", a, b, reverse) (0x4bfb20 → command 0x14, 0x428980):
 /// one-shot animation without stopping; flags as in ActorAnimation.
 pub fn biActorAsyncAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const a = args_mod.nodeActor(ctx) orelse return .zero;
+    if (flagArg(args, 1)) a.instant = true;
     a.play(a.resolve(args_mod.argString(args, 0)), false, true);
+    if (flagArg(args, 2)) a.instant = true;
     a.reverse = args_mod.reverseFlag(args);
     a.hold_move = false;
     return .zero;
 }
 
 /// ActorQueueWalkAnimation("anim", a, b, reverse) (0x4bfce0 → command 0x1a):
-/// one-shot animation on the next path segment; 4th argument plays it backwards.
+/// one-shot animation on the next path segment; 2nd argument 1 plays it without the
+/// blend, 4th plays it backwards.
 pub fn biActorQueueWalkAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const a = args_mod.nodeActor(ctx) orelse return .zero;
     a.queued_anim = args_mod.argString(args, 0);
+    a.queued_instant = flagArg(args, 1);
     a.queued_reverse = args_mod.reverseFlag(args);
     return .zero;
 }
@@ -397,21 +481,27 @@ pub fn biActorEnableRotation(ctx: *anyopaque, _: *Runtime, _: *Object, args: []c
     return .zero;
 }
 
-/// ActorDisableInterpolation() (0x4bff50 → command 0x18, +0x31e8): the next
-/// animation without blending from the previous one (0x44f910). We have no
-/// blending, so the switch is instant anyway.
-pub fn biActorDisableInterpolation(_: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
+/// ActorDisableInterpolation() (0x4bff50 → command 0x18, 0x424256: +0x31e8): the next
+/// animation without blending from the previous one (0x44f910).
+pub fn biActorDisableInterpolation(ctx: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
+    const a = args_mod.nodeActor(ctx) orelse return .zero;
+    a.instant = true;
     return .zero;
 }
 
-/// ActorQueueWaitForInterpolation() (0x4bfee0 → command 0x1d): wait for the
-/// animation blend to finish; ours is instant, nothing to wait for.
-pub fn biActorQueueWaitForInterpolation(_: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
+/// ActorQueueWaitForInterpolation() (0x4bfee0 → command 0x1d): movement waits for
+/// the animation blend to finish (0x424e5f: +0x19 != 2).
+pub fn biActorQueueWaitForInterpolation(ctx: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
+    const a = args_mod.nodeActor(ctx) orelse return .zero;
+    if (a.anim_hold > 0) a.hold_blend = true;
     return .zero;
 }
 
 /// ActorQueueWaitForAnimation(["anim"]) (0x4bfe50 → commands 0x1b/0x1c): path
-/// movement waits for the current one-shot animation to end.
+/// movement waits for the current one-shot animation to end. The name changes nothing
+/// but a tick: 0x1c is done at the animation end like 0x1b (0x424e4f); with the name's
+/// slot (0x4280e0) equal to the last slot played (+0x30e4) the queue goes on in that
+/// same tick (0x4268b6), otherwise on the next.
 pub fn biActorQueueWaitForAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
     const a = args_mod.nodeActor(ctx) orelse return .zero;
     if (a.one_shot) a.hold_move = true;
@@ -420,18 +510,18 @@ pub fn biActorQueueWaitForAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, _:
 
 /// ActorAsyncWalkAnimation(a, b) (0x4bfbd0 → command 0x15, 0x422ea0): start the
 /// walk animation at once, the queued one-shot (ActorQueueWalkAnimation) if any,
-/// else the current walk; movement doesn't wait. a, b are blend flags (0x18).
-pub fn biActorAsyncWalkAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
+/// else the current walk; movement doesn't wait. a, b = 1 queue command 0x18 (no
+/// blend) before and after it (0x4bfc02, 0x4bfc2e).
+pub fn biActorAsyncWalkAnimation(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
     const a = args_mod.nodeActor(ctx) orelse return .zero;
-    if (a.queued_anim) |q| {
-        a.queued_anim = null;
-        a.play(a.resolve(q), false, true);
-        a.reverse = a.queued_reverse;
+    if (flagArg(args, 0)) a.instant = true;
+    if (a.playQueued()) {
         a.hold_move = false;
     } else {
         a.play(a.resolve(a.walk_anim), true, false);
         a.reverse = a.walk_reverse;
     }
+    if (flagArg(args, 1)) a.instant = true;
     return .zero;
 }
 
@@ -462,6 +552,26 @@ pub fn biActorQueueDelay(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const
     const o = w.actorObject(args[0].string) orelse return .zero;
     const n: u32 = @intCast(@max(0, args[1].int));
     try world_mod.actorOf(o).queue.append(w.gpa, .{ .delay = n });
+    return .zero;
+}
+
+/// Actor_QueueJustifyPosition(actor) (0x4c0ac0 → 0x4253c0, command 0x24): only (string).
+pub fn biActorQueueJustifyPosition(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
+    const w = args_mod.worldOf(ctx);
+    if (args.len < 1 or args[0] != .string) return .zero;
+    const o = w.actorObject(args[0].string) orelse return .zero;
+    try world_mod.actorOf(o).queue.append(w.gpa, .justify);
+    return .zero;
+}
+
+/// Actor_QueuePlace(actor, "area", index) (0x4c0b00 → 0x425400, command 0x25): only
+/// (string, string, int); the area name is kept to 32 characters (strncpy 0x20).
+pub fn biActorQueuePlace(ctx: *anyopaque, _: *Runtime, _: *Object, args: []const Value) anyerror!Value {
+    const w = args_mod.worldOf(ctx);
+    if (args.len < 3 or args[0] != .string or args[1] != .string or args[2] != .int) return .zero;
+    const o = w.actorObject(args[0].string) orelse return .zero;
+    const name = args[1].string[0..@min(args[1].string.len, 32)];
+    try world_mod.actorOf(o).queue.append(w.gpa, .{ .place = .{ .area = try w.arena_state.allocator().dupe(u8, name), .index = args[2].int } });
     return .zero;
 }
 

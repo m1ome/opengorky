@@ -1,4 +1,5 @@
-# Builds the macOS, Linux and Windows packages (scripts/dist-*.sh). A pushed v* tag, or a
+# Builds the macOS, Linux and Windows packages (scripts/dist-*.sh): the game and, as
+# separate assets, the level editor (OpenGorky-Editor-*, opengorky-editor-*). A pushed v* tag, or a
 # manual run with a `tag` (created on the selected commit), publishes them as a GitHub
 # release; asset names don't change between versions, so the site can link
 # https://github.com/<owner>/<repo>/releases/latest/download/<asset>.

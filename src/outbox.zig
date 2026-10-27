@@ -46,6 +46,9 @@ pub const Outbox = struct {
     shake: [2]f32 = .{ 0, 0 },
     /// DOLLY(point, time, zoom%): target, time in 1/100 s (0 = instant), zoom.
     dolly: ?struct { to: [2]f32, time: f32, zoom: ?f32 } = null,
+    /// ZOOM(percent, time) (0x478220): zoom target; time in 1/100 s as DOLLY's (0 = at
+    /// once), null — zoom_speed.
+    zoom: ?struct { to: f32, time: ?f32 } = null,
     /// Scene ended: return zoom to 1 (0x4790ad, zoom_speed 0.1).
     zoom_reset: bool = false,
     /// Snap the camera to the selected hero without easing (GUI_NORMAL, PLACEHEROES).

@@ -149,6 +149,8 @@ pub const LevelView = struct {
     walk_fit_done: bool = false,
     /// Background depth tolerance along the floor for levels with `.cfg` and no battle grid.
     cfg_tol: ?f32 = null,
+    /// Largest floor depth residual on perspective levels (shadow plane offset).
+    floor_spread: ?f32 = null,
     /// A window is open (inventory, menu, safe…): items don't blink (0x45bf90).
     ui_modal: bool = false,
     /// A window over the battle (give mode count, 0x4b2fb0): frame and tick go only
@@ -177,6 +179,8 @@ pub const LevelView = struct {
     /// Actor layer detail: pixels per screen pixel (set by the viewer from the
     /// window size; the layer is recreated on change).
     ss: u32 = 1,
+    /// Actor layer width in screen pixels (wider than 640 with `scaling = adaptive`).
+    layer_w: u32 = 640,
     layer_tex: ?*c.SDL_Texture = null,
     /// Where `layer_tex` may be non-empty (uploaded by previous frames).
     /// Layer parts uploaded last time (they must be erased there too).

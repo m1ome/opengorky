@@ -116,6 +116,8 @@ pub const Viewer = struct {
     gamma_lut: [256]u8 = undefined,
     gamma_lut_for: f32 = -1,
     gamma_tex: ?*c.SDL_Texture = null,
+    /// `*-blur` scaling: the frame shrunk twice (the blurred borders).
+    blur_tex: [2]?*c.SDL_Texture = .{ null, null },
     /// 640×480 frame: everything draws here, then stretches to the window per `scaling`.
     /// The frame texture is `ss` times larger (draw scale ss): UI and background keep
     /// their pixels larger, models and effects render at window resolution.
@@ -124,6 +126,10 @@ pub const Viewer = struct {
     detail: Detail = .{},
     /// Input script `S file` step: a window shot, frame already stretched as on screen.
     window_shot: ?[]const u8 = null,
+    /// Input script `o DIR`: every presented frame (one world tick, 1/30 s) goes to
+    /// DIR/00000.png… at frame size (640×480 × detail), until `O` (video clips, scripts/record-demo.sh).
+    record_dir: ?[]const u8 = null,
+    record_n: u32 = 0,
     /// Port settings (opengorky.cfg) and the file path.
     cfg: config.Config = .{},
     cfg_dir: ?[]const u8 = null,
@@ -185,6 +191,7 @@ pub const Viewer = struct {
         self.video_queue.deinit(self.gpa);
         if (self.zoom_tex) |t| c.SDL_DestroyTexture(t);
         if (self.gamma_tex) |t| c.SDL_DestroyTexture(t);
+        for (self.blur_tex) |b| if (b) |t| c.SDL_DestroyTexture(t);
         if (self.thumb) |*t| t.deinit(self.gpa);
         self.console.deinit(self.gpa);
         self.closeAll();
@@ -319,6 +326,7 @@ pub const Viewer = struct {
         mouse: [2]f32,
         zoom: f32,
         ss: u32,
+        wide: f32,
     };
 
     pub fn safeOpen(self: *Viewer) bool {

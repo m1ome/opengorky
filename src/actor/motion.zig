@@ -12,7 +12,12 @@ const Actor = actor.Actor;
 /// One actor tick: animation, path movement, attachment.
 /// `model` gives animation lengths and root motion; may be null.
 pub fn tick(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f32, rand: *Rand) void {
+    // A name the model lacks leaves the player as it was (0x44f960 → 0x44fa62): no transition.
+    if (model) |m| if (m.anims.find(a.anim) == null) {
+        a.anim_hold = 0;
+    };
     if (a.anim_paused) {} else if (a.anim_hold > 0) a.anim_hold -= 1 else a.anim_ticks += 1;
+    if (a.anim_hold == 0) a.hold_blend = false;
     a.tickFx();
 
     // Turn in place (0x424d30): if the rest is within one step, snap to the target and end
@@ -34,7 +39,7 @@ pub fn tick(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f
     // (0x424665, 0x508780 = 1.5): the actor is not pulled onto it, the next segment
     // starts at once and steps in the same tick (loop 0x4265d7…0x4265ef).
     var guard: usize = 0;
-    while (a.path_index < a.path.items.len and !(a.hold_move and a.one_shot) and a.delay == 0) : (guard += 1) {
+    while (a.path_index < a.path.items.len and !(a.hold_move and a.one_shot) and !a.hold_blend and a.delay == 0) : (guard += 1) {
         if (guard > a.path.items.len) break;
         const target = a.path.items[a.path_index];
         const p = fields.pos(o);
@@ -64,12 +69,21 @@ pub fn tick(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f
                 }
             }
         } else if (a.seg_index != a.path_index) {
-            // Segment start (0x423993): the angle to the point or along the next segment,
-            // whichever is closer to the current angle (0x423a3a…0x423b47).
+            // Segment start: a route cell (command 0, 0x423993) faces the point or along the
+            // next segment, whichever is closer to the current angle (0x423a3a…0x423b47) —
+            // the next only if it is a cell too (same command type, 0x4239dd). A `.ap` path
+            // node (command 0x11, 0x426ff8) faces its point straight (0x4237df → 0x4238db):
+            // a stair's last node and the link's end cell share a point, and a zero next
+            // segment would turn the climber to angle 0 (sideways or backwards).
             a.seg_index = a.path_index;
             const cur = fields.angle(o);
             var want = fields.facing(dx, dy);
-            if (a.path_index + 1 < a.path.items.len) {
+            const isNode = struct {
+                fn f(ac: *const Actor, k: usize) bool {
+                    return k < ac.path_events.items.len and ac.path_events.items[k] != null;
+                }
+            }.f;
+            if (!isNode(a, a.path_index) and a.path_index + 1 < a.path.items.len and !isNode(a, a.path_index + 1)) {
                 const nx = a.path.items[a.path_index + 1];
                 const next = fields.facing(nx[0] - target[0], nx[1] - target[1]);
                 if (@abs(fields.angleDiff(next, cur)) <= @abs(fields.angleDiff(want, cur))) want = next;
@@ -127,6 +141,7 @@ fn turnTowards(o: *Object, want: f32) f32 {
 
 fn tickAnim(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f32, rand: *Rand) void {
     // End of a non-looping animation; a frozen one (death) no longer changes.
+    if (model) |m| a.noteShown(m);
     if (a.hold_last and !a.one_shot) return;
     if (a.frozen or a.anim_paused) return;
     if (model) |m| if (!a.loop and a.anim.len > 0) {
@@ -144,7 +159,7 @@ fn tickAnim(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f
                 }
                 if (a.isNotInPlace(a.anim)) {
                     const ref_first = if (m.anims.find(a.reference)) |r| r.first else an.first;
-                    applyRootMotion(o, m, ref_first, an.last, scale_px);
+                    applyRootMotion(a, o, m, ref_first, an.last, scale_px);
                 }
                 // Scene animation repeat.
                 if (a.repeat_left > 0) {
@@ -162,7 +177,14 @@ fn tickAnim(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f
                     a.reverse = a.walk_reverse;
                     return;
                 }
-                a.pickIdle(rand);
+                // Queued commands first (an IDLE_ANIMATION behind FAST_ANIMATION: no blend
+                // through the old idle, city-kozov_dead); the world runs them right after.
+                if (a.queue.items.len > 0) {
+                    a.idle_due = true;
+                    return;
+                }
+                // IDLE_OFF: no idle (0x422fa2), the last frame stays.
+                if (a.idle_off) a.frozen = true else a.pickIdle(rand);
             }
         } else {
             a.one_shot = false;
@@ -171,19 +193,29 @@ fn tickAnim(a: *Actor, o: *Object, model: ?*const model_cache.Model, scale_px: f
     };
 }
 
-/// Moves the actor by the body shift of an "off-place" animation (0x44fe90): bounds
-/// center of the last frame minus the reference animation's first frame, horizontally.
-fn applyRootMotion(o: *Object, m: *const model_cache.Model, first: u32, last: u32, scale_px: f32) void {
-    if (last >= m.frames.extra.len) return;
-    const b0 = m.frames.extra[first];
-    const b1 = m.frames.extra[last];
-    const mx = ((b1[0] + b1[3]) - (b0[0] + b0[3])) / 2 * scale_px;
-    const mz = ((b1[2] + b1[5]) - (b0[2] + b0[5])) / 2 * scale_px;
-    const ang = fields.modelAngle(fields.angle(o));
+/// Moves and turns the actor by an "off-place" animation (0x44fe90): bone 0 of its last
+/// frame against the reference animation's first frame — the translation without height,
+/// and the turn of elements 0/6 (acos, negative when 6·0' − 0·6' < 0); reversed, both
+/// negated (0x426733). The move is in the drawn model's axes (angle plus AdjustAngle, 0x4267c5).
+fn applyRootMotion(a: *Actor, o: *Object, m: *const model_cache.Model, first: u32, last: u32, scale_px: f32) void {
+    const fr = m.frames;
+    if (fr.bones == 0 or first >= fr.frames or last >= fr.frames) return;
+    const b0 = fr.matrix(first, 0);
+    const b1 = fr.matrix(last, 0);
+    const l0 = std.math.hypot(b0[0], b0[6]);
+    const l1 = std.math.hypot(b1[0], b1[6]);
+    var turn = std.math.acos(std.math.clamp((b0[0] * b1[0] + b0[6] * b1[6]) / (l0 * l1), -1, 1));
+    if (b0[6] * b1[0] - b1[6] * b0[0] < 0) turn = -turn;
+    const s: f32 = if (a.reverse) -1 else 1;
+    a.off_place = .{ s * (b1[9] - b0[9]), 0, s * (b1[11] - b0[11]), s * turn };
+    const mx = a.off_place[0] * scale_px;
+    const mz = a.off_place[2] * scale_px;
+    const ang = fields.modelAngle(fields.angle(o) + a.angle_offset);
     const ca = @cos(ang);
     const sa = @sin(ang);
     const p = fields.pos(o);
     fields.setPos(o, .{ p[0] + mx * ca - mz * sa, p[1] + mx * sa + mz * ca, p[2] });
+    fields.setAngle(o, fields.angle(o) + a.off_place[3]); // 0x4233bc
 }
 
 /// Attached actor position: the parent's attachment point in the world.
@@ -232,4 +264,31 @@ test "battle walk turns in place before stepping onto the next cell" {
     tick(&a, &o, null, 1, &prng);
     try std.testing.expect(fields.getF(&o, "x") < 0);
     try std.testing.expectEqualStrings("walk", a.anim);
+}
+
+test "a one-shot ending behind queued commands leaves the idle to the queue (0x4265d7)" {
+    // city-kozov_dead: FAST_ANIMATION("Specnaz1","dead_B") + IDLE_ANIMATION(…,"dead_B")
+    // with the old scene's g_idle still forced; picking it first blended through standing.
+    const gpa = std.testing.allocator;
+    var o: Object = .{ .name = "t", .class = undefined };
+    defer o.vars.deinit(gpa);
+    inline for (.{ "x", "y", "z", "angle", "rotspeed" }) |n|
+        try o.declare(gpa, n, .{ .type = .float, .value = .{ .float = 0 } });
+    var items = [_]@import("../formats.zig").anim.Animation{
+        .{ .name = "dead_B", .first = 0, .last = 0, .speed = 1, .sounds = &.{} },
+        .{ .name = "g_idle", .first = 1, .last = 9, .speed = 1, .sounds = &.{} },
+    };
+    var m: model_cache.Model = undefined;
+    m.anims = .{ .arena = undefined, .items = &items };
+    var a: Actor = .{};
+    defer a.queue.deinit(gpa);
+    var prng: Rand = .{};
+    a.forced_idle = "g_idle";
+    a.instant = true;
+    a.play("dead_B", false, true);
+    try a.queue.append(gpa, .{ .idle_anim = "dead_B" });
+    for (0..3) |_| tick(&a, &o, &m, 1, &prng);
+    try std.testing.expect(!a.one_shot and a.idle_due);
+    try std.testing.expectEqualStrings("dead_B", a.anim);
+    try std.testing.expectEqual(@as(u32, 0), a.anim_hold);
 }

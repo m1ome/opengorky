@@ -21,12 +21,13 @@ pub fn tick(self: *World) !void {
     s.runner = null;
     s.autocamera = true;
     // Every actor's queue (0x479060…0x479093): the scene's idle and walk are reset
-    // (commands 0x27 and 0x28 with an empty name).
+    // (commands 0x27 and 0x28 with an empty name), idles on again (0x26 with 1).
     for (self.actorObjects()) |o| {
         const n = World.nativeOf(o);
         if (n.kind != .actor or n.deleted) continue;
         try n.actor.queue.append(self.gpa, .{ .idle_anim = "" });
         try n.actor.queue.append(self.gpa, .{ .walk_anim = .{ .name = "", .speed = null } });
+        try n.actor.queue.append(self.gpa, .{ .idle_enable = true });
     }
     self.out.zoom_reset = true;
     if (s.mp3) {
@@ -154,6 +155,32 @@ pub fn resumeScene(self: *World, m: MovingScene) !void {
 /// StartScriptlet (0x478e20): the running scene is aborted, its lines dropped
 /// without the scene end (0x478fd0 not called), skip cleared; the new one starts
 /// from its first line on the next tick.
+/// A scene tried on its own (console `playscene`, scene_check): the level's start scene
+/// and what it left (fade, panorama, a level change) dropped, the heroes freed from its
+/// set-up as it would have left them — off what carried them (01_port's pontoon, which
+/// stops), standing (state 0) rather than seated.
+pub fn dropStart(self: *World) void {
+    self.scene.runner = null;
+    self.scene.queue.clearRetainingCapacity();
+    self.flow.pending_level = null;
+    self.scene.cutscene = false;
+    self.scene.fade_target = 0;
+    self.scene.panorama = false;
+    for (self.rt.objects.items) |o| {
+        if (!world.isHeroActor(o)) continue;
+        const a = world.actorOf(o);
+        if (a.attached_to) |p| {
+            world.actorOf(p).dropCommands(self.crt());
+            a.attached_to = null;
+            a.render_offset = .{ 0, 0, 0 };
+        }
+        if (a.holdState()) continue;
+        a.setState(0, self.isCombat());
+        a.forced_idle = null;
+        if (!a.busy()) a.pickIdle(self.crt());
+    }
+}
+
 pub fn startScriptlet(self: *World, name: []const u8) !void {
     if (self.scene_host) |h| return startScriptlet(h, name);
     const a = self.arena_state.allocator();

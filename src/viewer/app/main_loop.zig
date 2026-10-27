@@ -89,6 +89,12 @@ pub fn run(v: *Viewer, ctx: *input_ctx.Ctx, script: *?InputScript, audio_out: *?
             sc.shot = null;
             v.screenshot(path) catch |err| std.log.warn("shot {s}: {t}", .{ path, err });
         };
+        if (v.record_dir) |dir| {
+            var pb: [600]u8 = undefined;
+            const path = try std.fmt.bufPrint(&pb, "{s}/{d:0>5}.png", .{ dir, v.record_n });
+            v.screenshot(path) catch |err| std.log.warn("record {s}: {t}", .{ path, err });
+            v.record_n += 1;
+        }
         const pt_present = perf.now();
         try frame.presentFrame(v);
         perf.add(.present, pt_present);

@@ -2,8 +2,6 @@
 //! adjust.kdt settings (shadows, sound).
 
 const std = @import("std");
-const Io = std.Io;
-const Allocator = std.mem.Allocator;
 const og = @import("opengorky");
 const c = @import("sdl");
 
@@ -17,26 +15,19 @@ pub fn setWindowIcon(gpa: std.mem.Allocator, window: *c.SDL_Window) void {
     _ = c.SDL_SetWindowIcon(window, surf);
 }
 
-/// Shadows are on unless adjust.kdt has disable_shadows != 0.
-pub fn loadShadows(io: Io, gpa: Allocator, game: Io.Dir) bool {
-    const bytes = game.readFileAlloc(io, "adjust.kdt", gpa, .limited(1 << 20)) catch return true;
-    defer gpa.free(bytes);
-    var adj = og.formats.adjust.parse(gpa, bytes) catch return true;
-    defer adj.deinit(gpa);
-    return adj.int("disable_shadows", 0) == 0;
+/// Shadows are on unless adjust.kdt has disable_shadows != 0 (read by `adjust.load`).
+pub fn loadShadows() bool {
+    return og.formats.adjust.getInt("disable_shadows", 0) == 0;
 }
 
-/// Sound settings from adjust.kdt; defaults on error.
-pub fn loadSoundParams(io: Io, gpa: Allocator, game: Io.Dir) og.audio.sound.Params {
+/// Sound settings from adjust.kdt; the defaults without it.
+pub fn loadSoundParams() og.audio.sound.Params {
+    const adj = og.formats.adjust;
     var p: og.audio.sound.Params = .{};
-    const bytes = game.readFileAlloc(io, "adjust.kdt", gpa, .limited(1 << 20)) catch return p;
-    defer gpa.free(bytes);
-    var adj = og.formats.adjust.parse(gpa, bytes) catch return p;
-    defer adj.deinit(gpa);
-    p.volume_start = adj.float("sound_volume_start", p.volume_start);
-    p.volume_falloff = adj.float("sound_volume_falloff", p.volume_falloff);
-    p.pan_start = adj.float("sound_pan_start", p.pan_start);
-    p.pan_factor = adj.float("sound_pan_factor", p.pan_factor);
-    p.dialog_sound = adj.int("dialog_sound_control", 1) != 0;
+    p.volume_start = adj.getFloat("sound_volume_start", p.volume_start);
+    p.volume_falloff = adj.getFloat("sound_volume_falloff", p.volume_falloff);
+    p.pan_start = adj.getFloat("sound_pan_start", p.pan_start);
+    p.pan_factor = adj.getFloat("sound_pan_factor", p.pan_factor);
+    p.dialog_sound = adj.getInt("dialog_sound_control", 1) != 0;
     return p;
 }

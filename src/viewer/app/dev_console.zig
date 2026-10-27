@@ -65,18 +65,49 @@ pub const DevConsole = struct {
         self.len = n;
     }
 
-    /// Line into the console; long lines wrap at 78 chars.
+    /// Line into the console; long lines wrap at 78 chars. A help line (`help`: a
+    /// command, then its description) keeps the description in one column from
+    /// `desc_col`, wrapped by words under itself; a command reaching that column
+    /// gets a line of its own, its description starting on the next.
     pub fn print(self: *DevConsole, gpa: Allocator, text: []const u8) !void {
-        var rest = text;
-        while (true) {
-            const n = @min(rest.len, 78);
-            try self.lines.append(gpa, try gpa.dupe(u8, rest[0..n]));
-            // Scrolled up: the view stays; at the bottom: the new line shows.
-            if (self.scroll > 0) self.scroll += 1;
-            rest = rest[n..];
-            if (rest.len == 0) break;
+        if (descStart(text)) |k| {
+            const head = std.mem.trimEnd(u8, text[0..k], " ");
+            var desc = text[k..];
+            var prefix: []const u8 = head;
+            if (head.len >= desc_col) {
+                try self.add(gpa, head);
+                prefix = "";
+            }
+            while (desc.len > 0) {
+                var n: usize = @min(desc.len, width - desc_col);
+                if (n < desc.len) if (std.mem.lastIndexOfScalar(u8, desc[0..n], ' ')) |sp| {
+                    if (sp > 0) n = sp;
+                };
+                const line = try gpa.alloc(u8, desc_col + n);
+                @memset(line[0..desc_col], ' ');
+                @memcpy(line[0..prefix.len], prefix);
+                @memcpy(line[desc_col..], desc[0..n]);
+                try self.lines.append(gpa, line);
+                if (self.scroll > 0) self.scroll += 1;
+                desc = std.mem.trimStart(u8, desc[n..], " ");
+                prefix = "";
+            }
+        } else {
+            var rest = text;
+            while (true) {
+                const n = @min(rest.len, width);
+                try self.add(gpa, rest[0..n]);
+                rest = rest[n..];
+                if (rest.len == 0) break;
+            }
         }
         while (self.lines.items.len > 1000) gpa.free(self.lines.orderedRemove(0));
+    }
+
+    fn add(self: *DevConsole, gpa: Allocator, t: []const u8) !void {
+        try self.lines.append(gpa, try gpa.dupe(u8, t));
+        // Scrolled up: the view stays; at the bottom: the new line shows.
+        if (self.scroll > 0) self.scroll += 1;
     }
 
     /// Typed characters (printable ASCII except "`").
@@ -113,8 +144,19 @@ pub const DevConsole = struct {
             try gfx.check(c.SDL_SetRenderDrawColor(r, 170, 230, 170, 255));
         }
         for (lines[first..], 0..) |t, i| {
-            const z = std.fmt.bufPrintSentinel(&buf, "{s}", .{t[0..@min(t.len, 79)]}, 0) catch continue;
-            try gfx.check(c.SDL_RenderDebugText(r, 4, 4 + og.num.toF32(i) * 10, z));
+            const y = 4 + og.num.toF32(i) * 10;
+            const shown = t[0..@min(t.len, 79)];
+            // Help lines: the command in the console's green, its description (and
+            // the description's wrapped lines) in blue-grey from its column.
+            const split: usize = if (descStart(shown) != null or (shown.len > desc_col and std.mem.allEqual(u8, shown[0..desc_col], ' '))) desc_col else shown.len;
+            const head = std.fmt.bufPrintSentinel(&buf, "{s}", .{shown[0..split]}, 0) catch continue;
+            try gfx.check(c.SDL_RenderDebugText(r, 4, y, head));
+            if (split < shown.len) {
+                const tail = std.fmt.bufPrintSentinel(&buf, "{s}", .{shown[split..]}, 0) catch continue;
+                try gfx.check(c.SDL_SetRenderDrawColor(r, 150, 185, 235, 255));
+                try gfx.check(c.SDL_RenderDebugText(r, 4 + og.num.toF32(split) * 8, y, tail));
+                try gfx.check(c.SDL_SetRenderDrawColor(r, 170, 230, 170, 255));
+            }
         }
         try gfx.check(c.SDL_SetRenderDrawColor(r, 255, 255, 255, 255));
         const caret: []const u8 = if ((c.SDL_GetTicks() / 400) % 2 == 0) "_" else " ";
@@ -122,3 +164,20 @@ pub const DevConsole = struct {
         try gfx.check(c.SDL_RenderDebugText(r, 4, rows * 10 + 4, z));
     }
 };
+
+/// Console width in characters and the column help descriptions start at (both
+/// help lists align them there).
+const width: usize = 78;
+const desc_col: usize = 30;
+
+/// `help` output: a command, two spaces or more, its description at `desc_col` or
+/// after (a long command pushes it right): where the description starts.
+fn descStart(t: []const u8) ?usize {
+    if (t.len == 0 or t[0] == ' ') return null;
+    // A command one short of the column: a single space before its description.
+    if (t.len > desc_col and t[desc_col - 1] == ' ' and t[desc_col] != ' ') return desc_col;
+    const gap = std.mem.indexOf(u8, t, "  ") orelse return null;
+    var k = gap;
+    while (k < t.len and t[k] == ' ') k += 1;
+    return if (k >= desc_col and k < t.len) k else null;
+}

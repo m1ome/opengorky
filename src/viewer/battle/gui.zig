@@ -6,7 +6,7 @@ const Gui = gui_mod.Gui;
 const og = @import("opengorky");
 const c = @import("sdl");
 const gfx = @import("../media/gfx.zig");
-const monster_icons = Gui.monster_icons;
+const monster_icons = og.battle.report.monster_icons;
 
 /// Text in the 3d_msg font centred at (cx, cy) with scale, colour and brightness.
 /// 3d_msg glyph: its own if present (capitals), else the lowercase one.
@@ -80,6 +80,11 @@ pub fn msgTextAlpha(self: *Gui, r: *c.SDL_Renderer, t: []const u8, cx: f32, cy: 
 /// tick while holding and fading. "Victory" (501, 90,174,170, scale 2.25) at
 /// (320, 240) 90 ticks after the win (0x454880).
 pub fn drawBattleBanner(self: *Gui, r: *c.SDL_Renderer, w: *og.state.world.World, strings: ?*const og.formats.strtab.Table) !void {
+    // GUI_GAMEOVER from a scene: phase 1 as a lost battle's.
+    if (w.flow.defeat_ticks) |t| if (self.go_frame == null) {
+        try msgText(self, r, if (strings) |st| st.get(500) orelse "Game Over" else "Game Over", 320, 220, 2.25, gfx.adjRgb("cftGameOver", .{ 240, 64, 64 }), @min(1, og.num.toF32(t) / 30));
+        return;
+    };
     const b = &(w.battle orelse {
         self.last_phase = null;
         self.banner = null;
@@ -98,14 +103,14 @@ pub fn drawBattleBanner(self: *Gui, r: *c.SDL_Renderer, w: *og.state.world.World
     // Defeat (0x454350), phase 1: "Game Over" fades in over the battle for 90 ticks.
     if (b.phase == .lost and self.go_frame == null) {
         const a = @min(1, og.num.toF32(b.over_ticks) / 30);
-        try msgText(self, r, if (strings) |st| st.get(500) orelse "Game Over" else "Game Over", 320, 220, 2.25, gfx.rgb(240, 64, 64), a);
+        try msgText(self, r, if (strings) |st| st.get(500) orelse "Game Over" else "Game Over", 320, 220, 2.25, gfx.adjRgb("cftGameOver", .{ 240, 64, 64 }), a);
         return;
     }
     if (b.phase == .won) {
         const t: f32 = @floatFromInt(b.over_ticks);
         if (t > 90 and !self.report_open) {
             const a = @min(1, (t - 90) / 30);
-            try msgText(self, r, if (strings) |st| st.get(501) orelse "Victory" else "Victory", 320, 240, 2.25, gfx.rgb(90, 174, 170), a);
+            try msgText(self, r, if (strings) |st| st.get(501) orelse "Victory" else "Victory", 320, 240, 2.25, gfx.adjRgb("cftVictory", .{ 90, 174, 170 }), a);
         }
         return;
     }
@@ -131,10 +136,10 @@ pub fn drawGameOver(self: *Gui, r: *c.SDL_Renderer, strings: ?*const og.formats.
             return if (st) |x| x.get(id) orelse fb else fb;
         }
     }.get;
-    try msgText(self, r, s(strings, 500, "Game Over"), 320, 220, 2.25, gfx.rgb(240, 64, 64), 1);
-    try msgText(self, r, s(strings, 531, "Repeat Battle"), 320, 300, 0.6, gfx.rgb(240, 64, 64), 1);
-    const on = gfx.rgb(255, 140, 40);
-    const off = gfx.rgb(170, 60, 10);
+    try msgText(self, r, s(strings, 500, "Game Over"), 320, 220, 2.25, gfx.adjRgb("cftGameOver", .{ 240, 64, 64 }), 1);
+    try msgText(self, r, s(strings, 531, "Repeat Battle"), 320, 300, 0.6, gfx.adjRgb("cftGameOver", .{ 240, 64, 64 }), 1);
+    const on = gfx.adjRgb("cftGameOverSelected", .{ 255, 140, 40 });
+    const off = gfx.adjRgb("cftGameOverChoose", .{ 170, 60, 10 });
     try msgText(self, r, s(strings, 532, "Yes"), 320, 330, if (self.go_sel == 0) 0.6 else 0.5, if (self.go_sel == 0) on else off, 1);
     try msgText(self, r, s(strings, 533, "No"), 320, 355, if (self.go_sel == 1) 0.6 else 0.5, if (self.go_sel == 1) on else off, 1);
 }
@@ -143,6 +148,40 @@ pub fn clearGameOver(self: *Gui) void {
     if (self.go_frame) |t| c.SDL_DestroyTexture(t);
     self.go_frame = null;
     self.go_sel = 0;
+}
+
+/// The report's scrollbar (0x451ec7: 0x4ae8d0 at window + (0x24f, 0x23), 0x4ae790(12,
+/// 268, 15, 29, 16, 1), range 0..heroes − 3 by 0x4ae870); the update (0x451f92) reads
+/// its position into the first row shown (+0x2ac). Mouse only, as every 0x4aea50 bar.
+const report_bar: gui_mod.Scrollbar = .{ .y = 50 + 0x23, .len = 268, .rows = 3 };
+const report_bar_x: f32 = 10 + 0x24f;
+
+/// The heroes the report lists (the party's fighters of the battle).
+fn reportHeroes(b: *og.battle.battle.Battle, buf: []*og.battle.fighter.Fighter) []*og.battle.fighter.Fighter {
+    var n: usize = 0;
+    for (b.fighters.items) |*fi| if (fi.controllable() and n < buf.len) {
+        buf[n] = fi;
+        n += 1;
+    };
+    return buf[0..n];
+}
+
+fn reportCount(w: *og.state.world.World) usize {
+    const b = &(w.battle orelse return 0);
+    var buf: [8]*og.battle.fighter.Fighter = undefined;
+    return reportHeroes(b, &buf).len;
+}
+
+/// Left press on the report's scrollbar: the thumb held, off it a page (±16) — true if hit.
+pub fn reportPress(self: *Gui, w: *og.state.world.World, x: f32, y: f32) bool {
+    if (!self.report_open or x < report_bar_x or x > report_bar_x + 12 or y < report_bar.y - 1 or y > report_bar.y + report_bar.len + 1) return false;
+    if (report_bar.click(&self.report_scroll, reportCount(w), y)) self.report_drag = true;
+    return true;
+}
+
+/// The held thumb follows the mouse.
+pub fn reportDrag(self: *Gui, w: *og.state.world.World, y: f32) void {
+    report_bar.drag(&self.report_scroll, reportCount(w), y);
 }
 
 /// Post-battle report (0x452120): window at (10, 50); a row per hero (3 visible,
@@ -172,13 +211,11 @@ pub fn drawReport(self: *Gui, r: *c.SDL_Renderer, w: *og.state.world.World, stri
     const col: [3]u8 = gui_mod.text_light;
     const close = if (strings) |st| st.get(2) orelse "Close" else "Close";
     gui_mod.textShadow(f, t.*, 313 - @divTrunc(@as(i32, @intCast(f.measure(close))), 2), 409, close, col);
-    var heroes: [8]*og.battle.fighter.Fighter = undefined;
-    var nh: usize = 0;
-    for (b.fighters.items) |*fi| if (fi.controllable() and nh < heroes.len) {
-        heroes[nh] = fi;
-        nh += 1;
-    };
+    var buf: [8]*og.battle.fighter.Fighter = undefined;
+    const heroes = reportHeroes(b, &buf);
+    const nh = heroes.len;
     self.report_scroll = @min(self.report_scroll, nh -| 3);
+    try report_bar.draw(r, &self.scrollbar, report_bar_x, self.report_scroll, nh);
     for (0..3) |i| {
         const k = self.report_scroll + i;
         if (k >= nh) break;

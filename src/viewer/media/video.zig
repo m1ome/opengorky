@@ -217,14 +217,15 @@ pub const Video = struct {
             dims = probeSize(gpa, io, path) orelse return error.NoVideo;
             const reader_buf = try gpa.alloc(u8, 1 << 16);
             errdefer gpa.free(reader_buf);
+            const ffmpeg = "ffmpeg";
             const child = try std.process.spawn(io, .{
-                .argv = &.{ "ffmpeg", "-v", "error", "-i", path, "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-r", "15", "-" },
+                .argv = &.{ ffmpeg, "-v", "error", "-i", path, "-an", "-f", "rawvideo", "-pix_fmt", "rgba", "-r", "15", "-" },
                 .stdin = .ignore,
                 .stdout = .pipe,
                 .stderr = .ignore,
             });
             backend = .{ .proc = .{ .child = child, .reader_buf = reader_buf, .reader = undefined } };
-            if (std.process.run(gpa, io, .{ .argv = &.{ "ffmpeg", "-v", "error", "-i", path, "-vn", "-f", "wav", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-" } })) |res| {
+            if (std.process.run(gpa, io, .{ .argv = &.{ ffmpeg, "-v", "error", "-i", path, "-vn", "-f", "wav", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", "-" } })) |res| {
                 defer gpa.free(res.stdout);
                 defer gpa.free(res.stderr);
                 sound = og.audio.decode.decode(gpa, res.stdout) catch null;

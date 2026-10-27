@@ -173,6 +173,79 @@ test merge {
     try std.testing.expectEqual(null, f.glyphs['b']);
 }
 
+/// A glyph to write: its size, pixels (colour indices, row by row) and place in the data
+/// (`order`: the offset it had — the game's files keep their own order; new ones last).
+pub const EditGlyph = struct { width: u32, height: u32, pixels: []const u8, order: u32 };
+
+/// The glyphs of `bytes` to edit (pixels point into `bytes`).
+pub fn editable(bytes: []const u8) Error![256]?EditGlyph {
+    _ = try parse(bytes);
+    var out: [256]?EditGlyph = @splat(null);
+    const data = bytes[8 + 1024 ..];
+    for (&out, 0..) |*g, i| {
+        const off = std.mem.readInt(u32, bytes[8 + i * 4 ..][0..4], .little);
+        if (off == 0xffff_ffff) continue;
+        const w = std.mem.readInt(u32, data[off..][0..4], .little);
+        const h = std.mem.readInt(u32, data[off + 4 ..][0..4], .little);
+        g.* = .{ .width = w, .height = h, .pixels = data[off + 16 ..][0 .. @as(usize, w) * h], .order = off };
+    }
+    return out;
+}
+
+/// `CZC1` from `glyphs`, laid out by `order` (the game's fonts come back byte for byte).
+pub fn encode(gpa: Allocator, glyphs: *const [256]?EditGlyph) Allocator.Error![]u8 {
+    var idx: std.ArrayList(u8) = .empty;
+    defer idx.deinit(gpa);
+    for (glyphs, 0..) |g, i| if (g != null) try idx.append(gpa, @intCast(i));
+    std.mem.sort(u8, idx.items, glyphs, struct {
+        fn lt(gs: *const [256]?EditGlyph, x: u8, y: u8) bool {
+            return gs[x].?.order < gs[y].?.order or (gs[x].?.order == gs[y].?.order and x < y);
+        }
+    }.lt);
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(gpa);
+    var offs: [256]u32 = @splat(0xffff_ffff);
+    for (idx.items) |i| {
+        const g = glyphs[i].?;
+        offs[i] = @intCast(data.items.len);
+        var head: [16]u8 = undefined;
+        std.mem.writeInt(u32, head[0..4], g.width, .little);
+        std.mem.writeInt(u32, head[4..8], g.height, .little);
+        std.mem.writeInt(u32, head[8..12], 1, .little);
+        std.mem.writeInt(u32, head[12..16], 0, .little);
+        try data.appendSlice(gpa, &head);
+        try data.appendSlice(gpa, g.pixels);
+        while (data.items.len % 4 != 0) try data.append(gpa, 0);
+    }
+    const out = try gpa.alloc(u8, 8 + 1024 + data.items.len);
+    @memcpy(out[0..4], magic);
+    std.mem.writeInt(u32, out[4..8], @intCast(data.items.len), .little);
+    for (offs, 0..) |o, i| std.mem.writeInt(u32, out[8 + i * 4 ..][0..4], o, .little);
+    @memcpy(out[8 + 1024 ..], data.items);
+    return out;
+}
+
+test encode {
+    // Two glyphs stored 'b' before 'a' come back in that order.
+    var b: [8 + 1024 + 40]u8 = @splat(0xff);
+    @memcpy(b[0..4], magic);
+    std.mem.writeInt(u32, b[4..8], 40, .little);
+    std.mem.writeInt(u32, b[8 + 'a' * 4 ..][0..4], 20, .little);
+    std.mem.writeInt(u32, b[8 + 'b' * 4 ..][0..4], 0, .little);
+    const d = b[8 + 1024 ..];
+    for ([_]usize{ 0, 20 }) |o| {
+        std.mem.writeInt(u32, d[o..][0..4], 2, .little);
+        std.mem.writeInt(u32, d[o + 4 ..][0..4], 2, .little);
+        std.mem.writeInt(u32, d[o + 8 ..][0..4], 1, .little);
+        std.mem.writeInt(u32, d[o + 12 ..][0..4], 0, .little);
+        @memset(d[o + 16 .. o + 20], @intCast(o));
+    }
+    const gs = try editable(&b);
+    const out = try encode(std.testing.allocator, &gs);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualSlices(u8, &b, out);
+}
+
 /// Texture fonts (`3d_*.fnt`): 256 records, a character is a rectangle in the
 /// same-named texture `gfx_3d\textures\<name>.3df` (texture background is a red key).
 /// 16 bytes: `x, y, width, height`; 24 bytes: `x0, y0, x1, y1, advance, baseline`.

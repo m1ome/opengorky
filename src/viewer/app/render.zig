@@ -28,11 +28,21 @@ const screen_h = viewer.screen_h;
 fn prepLevel(v: *Viewer, l: *LevelView) void {
     l.fx_view = v.fx;
     l.shadows = v.shadows;
-    level_compose.setDetail(l, v.detail.k);
+    level_compose.setDetail(l, worldDetail(v), @intFromFloat(640 + 2 * gfx.wide));
     l.debug_hud = v.show_debug;
     l.debug = v.debug;
     l.gui = v.gui;
     l.ui_modal = (if (v.inventory) |inv| inv.open else false) or (if (v.menu) |m| m.open else false) or v.safeOpen();
+}
+
+/// The world's detail: the frame's, or zoomed in a hires frame ⌈k·z⌉ (≤ 4) — the world
+/// drawn at the zoom's pixels, so stretching it about the centre shrinks it and the
+/// models stay sharp; a 1× frame is stretched as the exe's.
+fn worldDetail(v: *Viewer) u32 {
+    const k = v.detail.k;
+    if (k <= 1) return k;
+    const kz = @ceil(og.num.toF32(k) * camera_view.viewZoom(v) - 0.01);
+    return @intFromFloat(std.math.clamp(kz, og.num.toF32(k), 4));
 }
 
 pub fn render(v: *Viewer) !void {
@@ -48,7 +58,9 @@ pub fn render(v: *Viewer) !void {
         // counter runs from the 9th tick, 0x41f401).
         const k: f32 = @floatFromInt(tr.ticks);
         const h = @max(0, 480 - 60 * k);
-        if (h > 0) try viewer.check(c.SDL_RenderTexture(r, snap, null, &.{ .x = 0, .y = (480 - h) / 2, .w = 640, .h = h }));
+        gfx.wholeView(r);
+        if (h > 0) try viewer.check(c.SDL_RenderTexture(r, snap, null, &.{ .x = 0, .y = (480 - h) / 2, .w = 640 + 2 * gfx.wide, .h = h }));
+        gfx.middleView(r);
         if (v.gui) |g| if (g.spinner.len() > 0) {
             const fr = (tr.ticks -| 8) % @as(u32, @intCast(g.spinner.len()));
             const sz = g.spinner.sizes.items[fr];
@@ -92,7 +104,9 @@ pub fn render(v: *Viewer) !void {
     if (v.safeOpen()) {
         const l = &v.level.?;
         prepLevel(v, l);
-        try level_compose.draw(l, r, v.scroll, v.mouse);
+        gfx.wholeView(r);
+        try level_compose.draw(l, r, wideScroll(v.scroll), wideMouse(v.mouse));
+        gfx.middleView(r);
         try v.safe.?.draw(r, v.mouse);
         if (v.gui) |g| try gui_panel.drawCursor(g, r, v.mouse[0], v.mouse[1]);
         return;
@@ -112,19 +126,33 @@ pub fn render(v: *Viewer) !void {
         l.cross_mode = l.world.mouse.cross();
         // Zoom (0x41fe80): the world is drawn into a texture and stretched about the
         // screen centre; the UI goes on top unzoomed.
-        const zoomed = @abs(v.zoom - 1) > 0.001;
+        const zoomed = @abs(camera_view.viewZoom(v) - 1) > 0.001;
+        const z = camera_view.viewZoom(v);
+        const zk = worldDetail(v);
         if (zoomed) {
-            if (v.zoom_tex == null) v.zoom_tex = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_TARGET, @intCast(640 * v.detail.k), @intCast(480 * v.detail.k));
+            const zw: f32 = (640 + 2 * gfx.wide) * og.num.toF32(zk);
+            if (v.zoom_tex) |t| {
+                var tw: f32 = 0;
+                var th: f32 = 0;
+                _ = c.SDL_GetTextureSize(t, &tw, &th);
+                if (tw != zw) {
+                    c.SDL_DestroyTexture(t);
+                    v.zoom_tex = null;
+                }
+            }
+            if (v.zoom_tex == null) v.zoom_tex = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_TARGET, @intFromFloat(zw), @intCast(480 * zk));
             if (v.zoom_tex) |t| {
                 try viewer.check(c.SDL_SetRenderTarget(r, t));
-                const f: f32 = @floatFromInt(v.detail.k);
+                const f: f32 = @floatFromInt(zk);
                 try viewer.check(c.SDL_SetRenderScale(r, f, f));
                 try viewer.check(c.SDL_SetRenderDrawColor(r, 0, 0, 0, 255));
                 try viewer.check(c.SDL_RenderClear(r));
             }
         }
-        try level_compose.draw(l, r, scroll, camera_view.worldMouse(v));
-        try battle_hud.drawBattleHud(l, r, scroll, v.gui);
+        // The world over the whole (maybe wide) frame, the UI in its middle 640.
+        gfx.wholeView(r);
+        try level_compose.draw(l, r, wideScroll(scroll), wideMouse(camera_view.worldMouse(v)));
+        try battle_hud.drawBattleHud(l, r, wideScroll(scroll), v.gui);
         // Selected hero frame outside battle and scenes (0x45b920).
         // The level-up points window is the top GUI mode (0x4af7c2): only it draws
         // (0x45ac1c → 0x4afe00); the panel, report and mode windows below do not.
@@ -132,11 +160,13 @@ pub fn render(v: *Viewer) !void {
         if (v.gui) |g| if (l.hero_box) |hb| if (!stats_modal and l.world.battle == null and !l.world.scene.cutscene and !l.world.scene.panorama) try gui_panel.drawHeroFrame(g, r, hb);
         if (zoomed) if (v.zoom_tex) |t| {
             try viewer.check(c.SDL_SetRenderTarget(r, v.frame_tex));
-            const z = v.zoom;
-            const f: f32 = @floatFromInt(v.detail.k);
-            const src: c.SDL_FRect = .{ .x = (320 - 320 / z) * f, .y = (240 - 240 / z) * f, .w = 640 / z * f, .h = 480 / z * f };
+            gfx.wholeView(r);
+            const hw = 320 + gfx.wide;
+            const f: f32 = @floatFromInt(zk);
+            const src: c.SDL_FRect = .{ .x = (hw - hw / z) * f, .y = (240 - 240 / z) * f, .w = 2 * hw / z * f, .h = 480 / z * f };
             try viewer.check(c.SDL_RenderTexture(r, t, &src, null));
         };
+        gfx.middleView(r);
         // Fighter info (0x455d90) is drawn by battle modes 0x4526ca and 0x455704,
         // not by "Use … on …" (0x453f80), which shows only its two lines at the cursor.
         // Push (0x452bf0) and give (0x4539e0) don't draw fighter info either.
@@ -222,6 +252,16 @@ pub fn render(v: *Viewer) !void {
         g.cursor_frame = hints.cursorFrame(v, l, g);
         try gui_panel.drawCursor(g, r, v.mouse[0], v.mouse[1]);
     };
+}
+
+/// Scroll of the whole frame's left edge (the middle 640 starts at `scroll`).
+fn wideScroll(s: [2]f32) [2]f32 {
+    return .{ s[0] - gfx.wide, s[1] };
+}
+
+/// A middle-640 point in whole-frame coordinates.
+fn wideMouse(m: [2]f32) [2]f32 {
+    return .{ m[0] + gfx.wide, m[1] };
 }
 
 /// Screen frame into a texture (frozen battle under the defeat text).

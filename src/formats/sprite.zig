@@ -130,6 +130,80 @@ fn le16(comptime words: []const u16) [words.len * 2]u8 {
     return out;
 }
 
+/// `spr1` with RLE frames from RGBA images (alpha below 128 is transparent),
+/// as the game's own sprites (icons: big frame, then small).
+pub fn encode(gpa: Allocator, frames: []const Image) Allocator.Error![]u8 {
+    var data: std.ArrayList(u8) = .empty;
+    defer data.deinit(gpa);
+    var ends: std.ArrayList(u32) = .empty;
+    defer ends.deinit(gpa);
+    for (frames) |img| {
+        for (0..img.height) |y| {
+            const row_start = data.items.len;
+            try data.appendNTimes(gpa, 0, 2);
+            var x: usize = 0;
+            while (x < img.width) {
+                const opaque_ = img.pixels[(y * img.width + x) * 4 + 3] >= 128;
+                var n: usize = 0;
+                while (x + n < img.width and n < 0x3fff and (img.pixels[(y * img.width + x + n) * 4 + 3] >= 128) == opaque_) n += 1;
+                try putU16(gpa, &data, @as(u16, @intCast(n)) | (if (opaque_) @as(u16, 0xc000) else 0));
+                if (opaque_) for (x..x + n) |xi| try putU16(gpa, &data, rgb565(img.pixels[(y * img.width + xi) * 4 ..][0..3].*));
+                x += n;
+            }
+            try putU16(gpa, &data, 0);
+            std.mem.writeInt(u16, data.items[row_start..][0..2], @intCast((data.items.len - row_start) / 2), .little);
+        }
+        try ends.append(gpa, @intCast(data.items.len));
+    }
+    const start: u32 = @intCast(16 + frames.len * 8 - 4);
+    var out = try gpa.alloc(u8, start + data.items.len);
+    @memcpy(out[0..4], magic);
+    std.mem.writeInt(u32, out[4..8], 0, .little);
+    std.mem.writeInt(u32, out[8..12], @intCast(frames.len), .little);
+    std.mem.writeInt(u32, out[12..16], start, .little);
+    for (frames, 0..) |img, i| {
+        const rec = out[16 + i * 8 ..];
+        std.mem.writeInt(u16, rec[0..2], @intCast(img.width), .little);
+        std.mem.writeInt(u16, rec[2..4], @intCast(img.height), .little);
+        if (i + 1 < frames.len) std.mem.writeInt(u32, rec[4..8], start + ends.items[i], .little);
+    }
+    @memcpy(out[start..], data.items);
+    return out;
+}
+
+fn putU16(gpa: Allocator, list: *std.ArrayList(u8), v: u16) Allocator.Error!void {
+    var b: [2]u8 = undefined;
+    std.mem.writeInt(u16, &b, v, .little);
+    try list.appendSlice(gpa, &b);
+}
+
+fn rgb565(c: [3]u8) u16 {
+    return @as(u16, c[0] >> 3) << 11 | @as(u16, c[1] >> 2) << 5 | c[2] >> 3;
+}
+
+test "encode: frames read back" {
+    const gpa = std.testing.allocator;
+    var a = try Image.init(gpa, 3, 2);
+    defer a.deinit(gpa);
+    a.pixels[4..8].* = .{ 0xff, 0, 0, 0xff };
+    a.pixels[8..12].* = .{ 0, 0xff, 0, 0xff };
+    a.pixels[20..24].* = .{ 0, 0, 0xff, 0xff };
+    var b = try Image.init(gpa, 1, 1);
+    defer b.deinit(gpa);
+    b.pixels[0..4].* = .{ 0xff, 0xff, 0xff, 0xff };
+    const bytes = try encode(gpa, &.{ a, b });
+    defer gpa.free(bytes);
+    var spr = try parse(gpa, bytes);
+    defer spr.deinit(gpa);
+    try std.testing.expectEqual(2, spr.frames.len);
+    var x = try decodeFrame(gpa, spr.frames[0]);
+    defer x.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, a.pixels, x.pixels);
+    var y = try decodeFrame(gpa, spr.frames[1]);
+    defer y.deinit(gpa);
+    try std.testing.expectEqualSlices(u8, b.pixels, y.pixels);
+}
+
 test "decode rle frame" {
     const gpa = std.testing.allocator;
     // Row 1: skip 1, literal 2 (red, green). Row 2: fill 3 blue.

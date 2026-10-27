@@ -55,6 +55,11 @@ pub const Flame = struct {
     spawned: u32 = 0,
     max: u32,
     life: u32 = 16,
+    /// The stream ends its fighter's attack (+0x3198 − 1 when the object dies, 0x49fd70 →
+    /// 0x425610): set for the flamethrower, whose queue (0x48cdd6) has no attack-end
+    /// command 6. Stinger's stream ends the same way, but its command 6 comes earlier
+    /// (0x48b750, after stinger_s_delay2) and ends the attack first.
+    ends_attack: bool = false,
     parts: std.ArrayList(FlameParticle) = .empty,
 
     /// 0x49faa0: one particle per tick until `max`; object timer.
@@ -69,4 +74,25 @@ pub const Flame = struct {
         fl.parts.deinit(a);
         return false;
     }
+
+    /// Orders stay locked (0x454fb0 → 0x422590) until the object dies: its timer drops
+    /// below 0 (0x4a01fa), particles still in the air don't count.
+    pub fn holdsAttack(fl: Flame) bool {
+        return fl.ends_attack and fl.timer >= 0;
+    }
 };
+
+test "flamethrower stream holds its attacker's attack until the timer drops below 0 (0x4a01fa)" {
+    var fl: Flame = .{ .src = .{ 0, 0, 0 }, .dir = .{ 0, 0, 0 }, .timer = 90, .max = 90, .ends_attack = true };
+    defer fl.parts.deinit(std.testing.allocator);
+    for (0..90) |_| _ = fl.tick(std.testing.allocator);
+    try std.testing.expect(fl.holdsAttack());
+    _ = fl.tick(std.testing.allocator);
+    try std.testing.expect(!fl.holdsAttack());
+    // Particles still fly, but the attack is over.
+    try std.testing.expect(fl.parts.items.len > 0);
+    // Other streams (Stinger, Pain God) leave the attack end to the queue.
+    fl.ends_attack = false;
+    fl.timer = 10;
+    try std.testing.expect(!fl.holdsAttack());
+}

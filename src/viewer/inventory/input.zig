@@ -46,6 +46,7 @@ pub fn press(self: *InventoryView, w: *World, x: f32, y: f32) void {
     }
     switch (hit) {
         .portrait => |i| if (i != self.hero) {
+            inv.equipment.leaveInventory(w, hero); // 0x42e27c
             self.hero = i;
             self.scroll = 0;
             self.current = if (self.heroObj(w)) |h| inv.equipment.equipped(w, h, .hand) else null;

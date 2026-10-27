@@ -13,6 +13,16 @@ const Scaling = enum {
     sharp,
     /// Whole window, smoothed.
     smooth,
+    /// Whole window/screen, smoothed, 4:3 stretched to its shape (no borders, distorted).
+    stretch,
+    /// Wide window: large locations show more of the background at the sides,
+    /// narrower levels (battles, rooms) are zoomed in to fill the width (top and
+    /// bottom scroll); the UI stays the middle 640×480. Screens without the world
+    /// (menu, inventory, video) stand over a blurred copy, as `stretch-blur`.
+    adaptive,
+    /// `smooth` with the borders filled by a blurred, darkened copy of the frame
+    /// stretched over the whole window.
+    @"stretch-blur",
 };
 
 pub const Log = enum { none, warn, info };
@@ -75,7 +85,8 @@ pub const Config = struct {
             const key = std.mem.trim(u8, line[0..eq], " \t");
             const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
             if (std.mem.eql(u8, key, "scaling")) {
-                cfg.scaling = std.meta.stringToEnum(Scaling, val) orelse cfg.scaling;
+                // adaptive-blur / adaptive-fill of earlier builds: now adaptive.
+                cfg.scaling = std.meta.stringToEnum(Scaling, val) orelse if (std.mem.startsWith(u8, val, "adaptive")) .adaptive else cfg.scaling;
             } else if (std.mem.eql(u8, key, "hires")) {
                 cfg.hires = flag(val) orelse cfg.hires;
             } else if (std.mem.eql(u8, key, "upscale")) {
@@ -117,6 +128,12 @@ pub const Config = struct {
             \\#   integer — integer scaling (crisp pixels, may leave borders)
             \\#   sharp   — fill the window, sharp pixels
             \\#   smooth  — fill the window, smoothed
+            \\#   stretch — stretch to the whole window/screen, no borders (4:3 distorted on 16:9)
+            \\#   adaptive — wide window: large locations show more at the sides, battles
+            \\#              and rooms zoomed in to fill the width (top and bottom scroll
+            \\#              with the mouse at the edges); the UI stays in the middle;
+            \\#              menu and inventory over a blurred copy
+            \\#   stretch-blur — 4:3 in the middle over a blurred stretched copy (no black borders)
             \\scaling = {t}
             \\
             \\# Models, shadows and effects at window resolution: 1 — yes, 0 — 640×480 as the original
@@ -213,6 +230,8 @@ test "hasKey" {
 test "parse config" {
     const cfg = Config.parse("# x\nscaling = smooth\nfullscreen=1\ndebug = on\nlog = none\nupscale = off\nfps_limit = 60\nfps_background = 0\nbad\n");
     try std.testing.expectEqual(Scaling.smooth, cfg.scaling);
+    try std.testing.expectEqual(Scaling.stretch, Config.parse("scaling = stretch\n").scaling);
+    try std.testing.expectEqual(Scaling.adaptive, Config.parse("scaling = adaptive-fill\n").scaling);
     try std.testing.expect(cfg.fullscreen);
     try std.testing.expect(cfg.debug);
     try std.testing.expectEqual(Log.none, cfg.log);

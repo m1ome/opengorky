@@ -110,12 +110,15 @@ fn windowKey(v: *Viewer, ctx: *Ctx, ev: c.SDL_Event) bool {
         (ev.key.key == c.SDLK_F and (mod & c.SDL_KMOD_GUI) != 0 and (mod & c.SDL_KMOD_CTRL) != 0);
     if (ev.key.key != c.SDLK_F10 and !full_key) return false;
     if (ev.key.key == c.SDLK_F10) {
-        v.cfg.scaling = @fromBackingInt(@intCast((@backingInt(v.cfg.scaling) + 1) % 3));
+        v.cfg.scaling = @fromBackingInt(@intCast((@as(u8, @backingInt(v.cfg.scaling)) + 1) % 6));
         frame.applyScaling(v);
         v.showMessage(switch (v.cfg.scaling) {
             .integer => "Scaling: integer",
             .sharp => "Scaling: fill, sharp",
             .smooth => "Scaling: fill, smooth",
+            .stretch => "Scaling: stretch, no borders",
+            .adaptive => "Scaling: adaptive, the world fills the window",
+            .@"stretch-blur" => "Scaling: 4:3 over a blurred copy",
         });
     } else {
         v.cfg.fullscreen = !v.cfg.fullscreen;

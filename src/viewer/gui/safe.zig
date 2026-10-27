@@ -18,8 +18,6 @@ const World = og.state.world.World;
 /// Window at (210, 100) (0x45801e).
 const origin = [2]f32{ 210, 100 };
 /// Keys from (safe_key_start_x, _y) in steps of safe_key_width × _height (adjust.kdt).
-const key_start = [2]f32{ 49, 24 };
-const key_size = [2]f32{ 42, 42 };
 /// Where the pressed key frame (1 + index) is drawn, from the window corner (0x4580bc…0x458118).
 const pressed_at = [12][2]f32{
     .{ 46, 23 },  .{ 87, 24 },  .{ 126, 24 },
@@ -63,8 +61,9 @@ pub const SafeView = struct {
 
     /// Key under a screen point: row·3 + column (0..11).
     fn keyAt(x: f32, y: f32) ?usize {
-        const fx = (x - origin[0] - key_start[0]) / key_size[0];
-        const fy = (y - origin[1] - key_start[1]) / key_size[1];
+        const adj = og.formats.adjust;
+        const fx = (x - origin[0] - @as(f32, @floatFromInt(adj.getInt("safe_key_start_x", 49)))) / @as(f32, @floatFromInt(adj.getInt("safe_key_width", 42)));
+        const fy = (y - origin[1] - @as(f32, @floatFromInt(adj.getInt("safe_key_start_y", 24)))) / @as(f32, @floatFromInt(adj.getInt("safe_key_height", 42)));
         if (fx < 0 or fy < 0 or fx >= 3 or fy >= 4) return null;
         return @as(usize, @intFromFloat(fy)) * 3 + @as(usize, @intFromFloat(fx));
     }

@@ -10,6 +10,8 @@ const fields = @import("../fields.zig");
 const model_cache = @import("../actor.zig").model_cache;
 const Model = model_cache.Model;
 const route = @import("route.zig");
+const areas = @import("areas.zig");
+const floor_mod = @import("floor.zig");
 const crt_rand = @import("../crt_rand.zig");
 const runtime = @import("../script.zig").runtime;
 const Runtime = runtime.Runtime;
@@ -88,6 +90,10 @@ pub fn runQueue(self: *World, o: *Object, a: *actor_mod.Actor) !void {
     // Commands behind a detached animation ran and the queue is empty: idle (0x4265f1 →
     // 0x422f90; without commands the exe lets the animation finish).
     var ran = false;
+    // A one-shot ended behind queued commands (`idle_due`): idle once none is current.
+    defer if (a.idle_due and !a.busy()) {
+        if (a.idle_off) a.frozen = true else a.pickIdle(self.crt());
+    };
     defer if (ran and a.detached and a.one_shot and a.queue.items.len == 0 and a.delay == 0 and a.path_index >= a.path.items.len) a.pickIdle(self.crt());
     while (a.queue.items.len > 0 and (!a.one_shot or a.async_anim or a.detached) and a.path_index >= a.path.items.len) {
         const cmd = a.queue.orderedRemove(0);
@@ -111,7 +117,7 @@ pub fn runQueue(self: *World, o: *Object, a: *actor_mod.Actor) !void {
                 a.async_anim = true;
             },
             .scene_anim => |sa| {
-                a.play(sa.name, false, true);
+                a.play(if (sa.logical) a.resolve(sa.name) else sa.name, false, true);
                 a.reverse = sa.reverse;
                 a.repeat_left = sa.count -| 1;
                 return;
@@ -127,8 +133,103 @@ pub fn runQueue(self: *World, o: *Object, a: *actor_mod.Actor) !void {
                 return;
             },
             .angle => |ang| fields.setAngle(o, ang),
+            .no_blend => a.instant = true,
+            .justify => {
+                if (self.res.models) |ms| if (ms.get(fields.meshFile(o))) |m| justifyPosition(o, a, m, self.actorScale() * m.unitScale());
+                a.instant = true;
+            },
+            // 0x422b70 drops the rest of the queue (0x427c10).
+            .place => |pl| {
+                placeAtPoint(self, o, pl.area, pl.index, 0);
+                a.instant = true;
+            },
+            .state => |st| {
+                if (st == 4) unlink(a);
+                a.setState(st, self.isCombat());
+                if (st == 4) a.pickIdle(self.crt()); // 0x42b493
+            },
+            .unlink => unlink(a),
+            .link => |l| {
+                for (a.links.items) |*e| if (std.ascii.eqlIgnoreCase(e.link, l.link)) {
+                    e.mesh = l.mesh;
+                    break;
+                } else try a.links.append(self.gpa, .{ .link = l.link, .mesh = l.mesh });
+            },
+            .wait_blend => if (a.anim_hold > 0) {
+                try a.queue.insert(self.gpa, 0, cmd);
+                return;
+            },
+            .idle_enable => |on| a.idle_off = !on,
         }
     }
+}
+
+/// Link count +0x30d0 = 0 (command 0x21; 0x22 with state 4): meshes off the link
+/// points, the weapon out of the hand.
+fn unlink(a: *actor_mod.Actor) void {
+    a.links.clearRetainingCapacity();
+    a.weapon_detached = true;
+}
+
+/// Actor onto area point `index` (0x422b70): queue, path and command reset first
+/// (0x427c10); no area or an index outside it leaves the actor where it is (0x422b99).
+/// The angle is the point's third coordinate; floor 1 takes the height from `.wm2` (0x422c00).
+pub fn placeAtPoint(self: *World, o: *Object, area_name: []const u8, index: i32, floor: i32) void {
+    const a = world.actorOf(o);
+    a.dropCommands(self.crt());
+    const area = areas.findArea(self, area_name) orelse return;
+    if (index < 0 or index >= area.points.len) return;
+    const p = area.points[@intCast(index)];
+    a.map = if (floor == 1) 1 else 0;
+    fields.setPos(o, floor_mod.groundOn(self, a.map, .{ p[0], p[1] }));
+    fields.setAngle(o, p[2]);
+    a.placed = true;
+}
+
+/// Actor_QueueJustifyPosition (command 0x24, 0x4240b7…0x42420f): the position moves by
+/// the drawn pose's root bone (+0x2458c, blended during a transition, 0x44fdc0) minus the
+/// current animation's last frame, in model axes (angle + AdjustAngle +0x3200, scale).
+/// The exe reads that frame as matrix [last] without × bones (0x4240e0): kept.
+fn justifyPosition(o: *Object, a: *const actor_mod.Actor, m: *const Model, scale_px: f32) void {
+    const fr = m.frames;
+    if (fr.bones == 0 or fr.frames == 0) return;
+    const an = m.anims.find(a.anim) orelse m.anims.find(a.shown.anim) orelse return;
+    if (an.last >= fr.matrices.len) return;
+    const from = model_cache.unshift(fr.matrix(@min(a.blend_from, fr.frames - 1), 0).*, a.blend_shift);
+    const to = fr.matrix(@min(a.frameIn(m), fr.frames - 1), 0);
+    const wt = a.blendWeight() orelse 1;
+    var d: [3]f32 = undefined;
+    for (&d, 0..) |*v, k| v.* = (from[9 + k] * (1 - wt) + to[9 + k] * wt - fr.matrices[an.last][9 + k]) * scale_px;
+    // Mesh x/z horizontal, y height (as followParent).
+    const ang = fields.modelAngle(fields.angle(o) + a.angle_offset);
+    const p = fields.pos(o);
+    fields.setPos(o, .{ p[0] + d[0] * @cos(ang) - d[2] * @sin(ang), p[1] + d[0] * @sin(ang) + d[2] * @cos(ang), p[2] + d[1] });
+}
+
+test "justify position: drawn root bone minus the last frame's (0x4240b7)" {
+    const anim = @import("../formats.zig").anim;
+    const gpa = std.testing.allocator;
+    var o: Object = .{ .name = "t", .class = undefined };
+    defer o.vars.deinit(gpa);
+    inline for (.{ "x", "y", "z", "angle" }) |n|
+        try o.declare(gpa, n, .{ .type = .float, .value = .{ .float = 0 } });
+    // Angle π/2: model axes are world axes (modelAngle 0).
+    fields.setAngle(&o, std.math.pi / 2.0);
+    var mats = [_][12]f32{ @splat(0), @splat(0) };
+    mats[0][9] = 3; // drawn frame 0: root x 3, height 1
+    mats[0][10] = 1;
+    mats[1][11] = 2; // last frame 1: root z 2
+    var anims = [_]anim.Animation{.{ .name = "idle", .first = 0, .last = 1, .speed = 0, .sounds = &.{} }};
+    var m: Model = undefined;
+    m.anims = .{ .arena = undefined, .items = &anims };
+    m.frames = .{ .frames = 2, .bones = 1, .matrices = &mats, .extra = &.{} };
+    // Idle just started with a transition: drawn pose = blend start (frame 0).
+    const a: actor_mod.Actor = .{ .anim = "idle", .anim_hold = actor_mod.Actor.blend_ticks, .blend_from = 0 };
+    justifyPosition(&o, &a, &m, 2);
+    const p = fields.pos(&o);
+    try std.testing.expectApproxEqAbs(@as(f32, 6), p[0], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, -4), p[1], 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 2), p[2], 1e-4);
 }
 
 test "reversed animation sounds follow the shown frame (0x44fb92)" {

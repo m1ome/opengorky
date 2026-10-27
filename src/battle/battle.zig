@@ -147,7 +147,12 @@ const Seq = struct {
 /// Time bomb or decoy on the field: a neutral fighter occupying its tile (`fighter`).
 /// `large`: PutLargeTimeBomb (everyone dies). `ticked`: the clock already moved
 /// this enemy turn (+0x24908).
-pub const Bomb = struct { obj: *Object, tile: Tile, fighter: ?u16 = null, large: bool = false, ticked: bool = false };
+/// `seq`: creation order shared with `Charge` (the object list 0x63bcb8 grows at the head).
+pub const Bomb = struct { obj: *Object, tile: Tile, fighter: ?u16 = null, large: bool = false, ticked: bool = false, seq: u32 = 0 };
+/// Incubus ball lying on the field (class 0x4a5840, kind 0): projectile `proj`,
+/// countdown `left` (+0x3b8), `ticked` this enemy turn (+0x3f8). `strike` is the
+/// weapon's stored roll (+0x1a94…+0x1a9c), shared by all charges of `weapon`.
+pub const Charge = struct { proj: u32, who: u16, weapon: *Object, aim: grid_mod.Target, strike: rules.Strike, left: i32, ticked: bool = false, seq: u32 = 0 };
 const max_targets = 512;
 
 pub const Battle = struct {
@@ -224,6 +229,10 @@ pub const Battle = struct {
     lenient_loss: bool = false,
     /// Time bombs: large ones (PutLargeTimeBomb) and hero bombs.
     bombs: std.ArrayList(Bomb) = .empty,
+    /// Incubus balls lying as charges, oldest first.
+    charges: std.ArrayList(Charge) = .empty,
+    /// Last `seq` given to a bomb or charge.
+    device_seq: u32 = 0,
     /// Tile of an exploded bomb: the camera watches it for 90 ticks after the blast
     /// (0x4987fa: [0x6c12c8] = 2 → 0x454cb0 → 0x45c160).
     bomb_cam: ?Tile = null,
@@ -258,9 +267,15 @@ pub const Battle = struct {
         return .{ .width = self.width, .height = self.height, .blocked = self.blocked, .occupant = self.occupant };
     }
 
+    pub fn nextSeq(self: *Battle) u32 {
+        self.device_seq += 1;
+        return self.device_seq;
+    }
+
     pub fn deinit(self: *Battle) void {
         self.fighters.deinit(self.gpa);
         self.bombs.deinit(self.gpa);
+        self.charges.deinit(self.gpa);
         self.decoys.deinit(self.gpa);
         self.popups.deinit(self.gpa);
         self.blasts.deinit(self.gpa);

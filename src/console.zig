@@ -32,7 +32,8 @@ const help_text =
     \\hitfx <weaponID> x y          battle: hit effects of a weapon at a tile (no damage)
     \\skills [hero]                 weapon skills: weapon nameID, level, uses
     \\call <obj> <func> [args...]   call a script function (args: numbers or strings)
-    \\scene <name>                  play a cutscene (common\\scriptlets\\<name>.scr)
+    \\scene <name>                  play a cutscene (common\scriptlets\<name>.scr)
+    \\playscene <name>              the level's own start scene dropped, then <name> (debugging a scene)
     \\hero <name>                   select a hero
     \\click <x> <y>                 click the background point like the player (walk, areas)
     \\get <object> <var>            script variable
@@ -77,7 +78,7 @@ pub fn run(w: *World, line: []const u8, out: *std.Io.Writer) !Effect {
         .close => .close,
         .fighters, .put, .spawn, .plan, .medicine, .popups, .win, .lose, .launch, .hitfx, .explode, .push, .targets, .tile, .aim, .attack, .endturn, .auto, .defend, .state, .fire, .gas => battle.run(c, w, cmd, &it, out),
         .give, .godmode, .levelup, .exp, .heal, .ammo, .skills, .hero, .items, .equip, .pick => hero.run(c, w, cmd, &it, out),
-        .map, .whereami, .level, .morph, .fxstate, .wait, .skipscene, .skip, .call, .scene, .click, .get, .set, .where, .immunities => world.run(c, w, cmd, &it, out),
+        .map, .whereami, .level, .morph, .fxstate, .wait, .skipscene, .skip, .call, .scene, .playscene, .click, .get, .set, .where, .immunities => world.run(c, w, cmd, &it, out),
     };
 }
 

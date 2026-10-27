@@ -78,11 +78,15 @@ pub fn run(c: Cmd, w: *World, cmd: []const u8, it: *common.Args, out: *std.Io.Wr
             try out.print("popups {d}\n", .{b.popups.items.len});
             for (b.popups.items) |*pp| try out.print("popup \"{s}\" delay {d} state {d} v {d:.2} dy {d:.0}\n", .{ pp.text(), pp.delay, pp.state, pp.v, pp.dy });
         },
-        .win, .lose => {
+        .win => {
             const b = &(w.battle orelse return common.say(out, "not in a battle\n", .{}));
-            const enemies = eq(cmd, "win");
+            try debug.debugWin(b, w);
+            try out.print("enemies killed\n", .{});
+        },
+        .lose => {
+            const b = &(w.battle orelse return common.say(out, "not in a battle\n", .{}));
             for (b.fighters.items) |*f| {
-                if ((f.side == .enemy) != enemies or !f.alive()) continue;
+                if (f.side != .hero or !f.alive()) continue;
                 fields.setHp(f.obj, 0);
                 f.dead = true;
                 // Like a battle death: death animation, then the corpse fades.
@@ -91,7 +95,7 @@ pub fn run(c: Cmd, w: *World, cmd: []const u8, it: *common.Args, out: *std.Io.Wr
                 a.hold_last = true;
                 a.startCorpseFade();
             }
-            try out.print("{s}\n", .{if (enemies) "enemies killed" else "heroes killed"});
+            try out.print("heroes killed\n", .{});
         },
         .launch => {
             const cm = w.combat_map orelse return common.say(out, "no battle\n", .{});

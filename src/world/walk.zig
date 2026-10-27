@@ -292,6 +292,30 @@ fn segDist(p: [2]f32, a: [2]f32, b: [2]f32) f32 {
     return std.math.hypot(p[0] - (a[0] + dx * t), p[1] - (a[1] + dy * t));
 }
 
+/// WalkOnSceneryTrack / WALK_ON_SCENERY_TRACK (0x4bff80): the area points at height `h`;
+/// the actor stands at point `start` with its angle (third coordinate) and floats along
+/// the rest at walk speed (0x422ea0), turning as it goes.
+pub fn sceneryTrack(self: *World, o: *Object, track: []const u8, h: f32, start_arg: i32) !void {
+    const area = areas.findArea(self, track) orelse return;
+    if (area.points.len == 0) return;
+    const a = world.actorOf(o);
+    a.clearPath();
+    const start: usize = @min(@as(usize, @intCast(@max(0, start_arg))), area.points.len - 1);
+    const p0 = area.points[start];
+    fields.setPos(o, self.cam.unproject(p0[0], p0[1], h));
+    fields.setAngle(o, p0[2]);
+    for (area.points[start + 1 ..]) |p| {
+        const wp = self.cam.unproject(p[0], p[1], h);
+        try a.path.append(self.gpa, .{ wp[0], wp[1] });
+    }
+    a.move_speed = a.speedOf("walk") * self.speedScale();
+    // The exe queues the points as commands 0x11; the first actor tick only starts the
+    // queue (0x4265bc → 0x423680, no step), so the track moves from the second tick.
+    a.delay = 1;
+    a.on_track = true;
+    a.placed = true;
+}
+
 /// PlaceHeroes / PLACEHEROES("area", floor) (0x4bf050): party hero i (panel order) to area
 /// point i (0x422b70). Queues and paths are reset first (0x427c10); otherwise a companion
 /// sent to the top of a ladder would walk back there after the move.

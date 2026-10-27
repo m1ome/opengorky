@@ -9,6 +9,7 @@ const save_mod = @import("../save.zig");
 const scenes = @import("../scene.zig").scenes;
 const crt_rand = @import("../crt_rand.zig");
 const battle_tick = @import("../combat.zig").tick;
+const immunity = @import("../battle.zig").immunity;
 const items = @import("../inventory.zig");
 const fixture = @import("fixture.zig");
 
@@ -84,6 +85,29 @@ test "switchTo/finish: there and back through the world cache" {
     try std.testing.expect(t.game.cache.get("01_b") != null);
 }
 
+test "a joined hero is a hero-class object in a new location: HERO_EnableEnumerate takes him out (0x4c1970)" {
+    var t: TestGame = undefined;
+    try t.init();
+    defer t.deinit();
+    // Medusa joins in 01_m (SETHERO); 01_n is entered for the first time, so the party
+    // creates her there. Its trigger is the observatory's crazy-Medusa one: she leaves the
+    // party (HERO_EnableEnumerate 0) and GUI_IsHero must say so, or the scene and its
+    // battle come again after the win.
+    try fixture.writeArchive(t.tmp.dir, "01_m/other.dat", &.{
+        .{ "01_m.lev", "" },
+        .{ "Medusa.hro", "int nameID; int avoidEnumerate;" },
+    });
+    try fixture.writeArchive(t.tmp.dir, "01_m/sprite.dat", &.{});
+    try fixture.writeLevel(t.tmp.dir, "01_n", "int was; int now;\nfunction leave() { was = GUI_IsHero(\"Medusa\"); HERO_EnableEnumerate(\"Medusa\",0); now = GUI_IsHero(\"Medusa\"); };");
+    _ = try t.go("01_m");
+    const m = t.game.world.?.actorObject("Medusa").?;
+    @TypeOf(t.game.world.?.*).nativeOf(m).hero = true;
+    _ = try t.go("01_n");
+    _ = try t.game.world.?.rt.callIfExists(t.level(), "leave", &.{});
+    try std.testing.expectEqual(1, t.level().getInt("was"));
+    try std.testing.expectEqual(0, t.level().getInt("now"));
+}
+
 test "battle: not cached, AfterBattle on return, retry restores the entry party" {
     var t: TestGame = undefined;
     try t.init();
@@ -92,16 +116,46 @@ test "battle: not cached, AfterBattle on return, retry restores the entry party"
     _ = try t.go("01__fight");
     try std.testing.expect(t.game.world.?.isCombat());
     try std.testing.expect(t.game.entry_party != null);
-    // Retry after a loss: the battle again with the party as it entered.
+    // Retry after a loss: the battle again with the party as it entered; immunities found
+    // in the lost battle are forgotten (the exe reloads the "battle" save, 0x4542c0).
     fields.setHp(t.hero(), 1);
+    _ = t.game.immunity.discover(immunity.table[0].id, .gas);
     _ = try t.game.retry();
     try std.testing.expectEqual(50, fields.hp(t.hero()));
+    try std.testing.expect(!t.game.immunity.isKnown(immunity.table[0].id, .gas));
     // Victory: back to where the battle started (no backLevel → prev).
     try std.testing.expect(t.game.leaveBattle());
     const sw = try t.go(t.game.pendingLevel().?);
     try std.testing.expect(sw.destroyed and sw.restored and sw.after_battle);
     try std.testing.expectEqualStrings("01__fight", t.level().getString("lastBattle"));
     try std.testing.expect(t.game.cache.get("01__fight") == null);
+}
+
+test "battle save: game over outside battle re-enters the last battle as it was entered" {
+    var t: TestGame = undefined;
+    try t.init();
+    defer t.deinit();
+    try std.testing.expect(t.game.battle_save == null);
+    t.level().setInt("mark", 7);
+    fields.setHp(t.hero(), 50);
+    const id = immunity.table[0].id;
+    _ = t.game.immunity.discover(id, .fire);
+    _ = try t.go("01__fight");
+    try std.testing.expect(t.game.battle_save != null);
+    _ = t.game.immunity.discover(id, .gas);
+    try std.testing.expect(t.game.leaveBattle());
+    _ = try t.go(t.game.pendingLevel().?);
+    t.level().setInt("mark", 9);
+    fields.setHp(t.hero(), 1);
+    // GUI_GAMEOVER "Yes" (0x4542c0): the battle again, the rest as the save had it.
+    const w = try t.game.reloadBattle();
+    try std.testing.expect(w.isCombat());
+    try std.testing.expectEqual(50, fields.hp(t.hero()));
+    try std.testing.expect(t.game.prev == null);
+    // Immunities as the battle was entered (table 0x6d2070 is in the save, 0x4722a5).
+    try std.testing.expect(t.game.immunity.isKnown(id, .fire) and !t.game.immunity.isKnown(id, .gas));
+    _ = try t.go("01_a");
+    try std.testing.expectEqual(7, t.level().getInt("mark"));
 }
 
 test "snapshot + load: current and cached locations come back from the save" {
@@ -111,6 +165,7 @@ test "snapshot + load: current and cached locations come back from the save" {
     t.level().setInt("mark", 7);
     _ = try t.go("01_b");
     fields.setHp(t.hero(), 33);
+    @TypeOf(t.game.world.?.*).nativeOf(t.hero()).actor.forced_idle = "medicine";
     var text: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer text.deinit();
     {
@@ -122,6 +177,8 @@ test "snapshot + load: current and cached locations come back from the save" {
     const w = try t.game.load(try save_mod.Save.parse(std.testing.allocator, text.written()));
     try std.testing.expectEqualStrings("01_b", w.level_name);
     try std.testing.expectEqual(33, fields.hp(t.hero()));
+    // idleAnimOverride (+0x30ed) is part of the actor's saved properties (0x46a691).
+    try std.testing.expectEqualStrings("medicine", @TypeOf(w.*).nativeOf(t.hero()).actor.forced_idle.?);
     try std.testing.expect(t.game.cache.count() == 0 and t.game.prev == null);
     // 01_a was only in the cache: its saved state, not a fresh init().
     _ = try t.go("01_a");
@@ -186,6 +243,20 @@ test "give: nothing to or from Medusa (0x42e485, 0x450872)" {
     try std.testing.expect(!items.give.canGive(w, t.hero(), other));
 }
 
+test "give: the backpack's items go before the worn one" {
+    var t: TestGame = undefined;
+    try t.init();
+    defer t.deinit();
+    const w = t.game.world.?;
+    const worn = (try items.create.giveItem(w, "vest.s", "Sullivan", null)).?;
+    const spare = (try items.create.giveItem(w, "vest.s", "Sullivan", null)).?;
+    items.item.setPlace(worn, .armor);
+    items.give.transfer(w, t.hero(), t.level(), worn, 1);
+    try std.testing.expect(fields.ownerIs(spare, t.level().name));
+    try std.testing.expect(fields.ownerIs(worn, "Sullivan"));
+    try std.testing.expectEqual(items.item.Place.armor, items.item.placeOf(worn));
+}
+
 test "Medusa can't be picked by the player outside a battle (0x4b2761, 0x451467)" {
     var t: TestGame = undefined;
     try t.init();
@@ -240,6 +311,16 @@ test "selectHero: avoidEnumerate heroes are skipped; plays the sound" {
     try std.testing.expectEqualStrings("selecthero", w.out.sound_events.items[w.out.sound_events.items.len - 1].name);
 }
 
+test "switchTo: a selected hero not in the new location's party list gives way to its first (0x481ce0)" {
+    var t: TestGame = undefined;
+    try t.init();
+    defer t.deinit();
+    // Medusa picked in a battle: on a location she is not a selectable party hero.
+    t.game.world.?.selected_hero = "Medusa";
+    _ = try t.go("01_b");
+    try std.testing.expectEqualStrings("Sullivan", t.game.world.?.selected_hero);
+}
+
 test "battle end: the engine queues victory or gameover music 90 ticks later (0x454880, 0x454350)" {
     var t: TestGame = undefined;
     try t.init();
@@ -284,4 +365,42 @@ test "a removed actor's current and morph glow end with it, not on return to the
     _ = try t.go("01_a");
     try std.testing.expectEqual(0, w.effects.beams.items.len);
     try std.testing.expectEqual(0, w.effects.morphs.items.len);
+}
+
+test "mod scene commands and builtins: IDLE_OFF, ZOOM, GUI_GAMEOVER, Actor_QueueState, AttachActors" {
+    var t: TestGame = undefined;
+    try t.init();
+    defer t.deinit();
+    const w = t.game.world.?;
+    const h = t.hero();
+    const a = @import("../state.zig").world.actorOf(h);
+    try scenes.startScriptlet(w, "modcmds");
+    try scenes.tick(w);
+    // IDLE_OFF is queued (command 0x26) and runs with the queue; ZOOM clamps to 200 %.
+    try std.testing.expect(a.idle_off);
+    try std.testing.expectEqual(@as(f32, 2), w.out.zoom.?.to);
+    try std.testing.expectEqual(@as(?f32, 10), w.out.zoom.?.time);
+    try std.testing.expectEqual(@as(?u32, 0), w.flow.defeat_ticks);
+    // The scene's end turns idles back on (0x479093).
+    for (0..8) |_| try game.tick(w);
+    try std.testing.expect(w.scene.runner == null and !a.idle_off);
+    for (0..90) |_| try game.tick(w);
+    var music = false;
+    for (w.out.music_events.items) |m| music = music or std.mem.eql(u8, m.name, "gameover");
+    try std.testing.expect(music);
+    // Actor_QueueState(…, 4) (command 0x22): links off, then the state.
+    const bi = @import("../builtins.zig").actors;
+    try a.links.append(w.gpa, .{ .link = "back", .mesh = "m" });
+    _ = try bi.biActorQueueState(w, &w.rt, h, &.{ .{ .string = "Sullivan" }, .{ .int = 4 } });
+    try @import("../world.zig").queue.runQueue(w, h, a);
+    try std.testing.expectEqual(4, a.state);
+    try std.testing.expect(a.links.items.len == 0 and a.weapon_detached);
+    // AttachActors: offset (a, b, c) in world units → mesh x = b, y = c, z = a over the scale.
+    _ = try bi.biAttachActors(w, &w.rt, h, &.{ .{ .string = "Sullivan" }, .{ .string = "Sullivan" }, .{ .float = 1 }, .{ .float = 2 }, .{ .float = 3 }, .{ .float = 0.5 } });
+    const s = w.actorScale() * 24;
+    try std.testing.expectApproxEqAbs(2 / s, a.link_offset[0], 1e-6);
+    try std.testing.expectApproxEqAbs(3 / s, a.link_offset[1], 1e-6);
+    try std.testing.expectApproxEqAbs(1 / s, a.link_offset[2], 1e-6);
+    try std.testing.expectEqual(@as(f32, 0.5), a.link_angle);
+    a.attached_to = null;
 }

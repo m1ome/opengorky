@@ -96,18 +96,6 @@ const Step = union(enum) {
     portal: struct { index: u16, reverse: bool },
 };
 
-/// Route from `from` to `to` (background pixels) as points only; null if unreachable.
-fn findPath(gpa: Allocator, m: WalkMap, from: [2]f32, to: [2]f32) !?[][2]f32 {
-    var cells: []?u32 = &.{};
-    defer gpa.free(cells);
-    const steps = (try findRoute(gpa, &cells, m, &.{}, from, to)) orelse return null;
-    defer gpa.free(steps);
-    var out: std.ArrayList([2]f32) = .empty;
-    errdefer out.deinit(gpa);
-    for (steps) |st| try out.append(gpa, st.walk);
-    return try out.toOwnedSlice(gpa);
-}
-
 /// Cell of a background point: truncating integer division, like `idiv` in 0x4abdd0.
 fn cellTrunc(p: [2]f32) [2]i32 {
     const cs: i32 = @intFromFloat(cell);
@@ -415,14 +403,89 @@ test "path around a wall" {
     var cells: [25]WalkMap.Cell = undefined;
     for (&cells, 0..) |*c, i| c.* = .{ .kind = if (i % 5 == 2 and i / 5 < 4) 0 else 1, .height = 0 };
     const m: WalkMap = .{ .width = 5, .height = 5, .cells = &cells };
-    const path = (try findPath(gpa, m, .{ 4, 4 }, .{ 36, 4 })).?;
+    var buf: []?u32 = &.{};
+    defer gpa.free(buf);
+    const path = (try findRoute(gpa, &buf, m, &.{}, .{ 4, 4 }, .{ 36, 4 })).?;
     defer gpa.free(path);
     // Must go down to the gap and out to the goal.
     var went_down = false;
-    for (path) |p| if (p[1] > 32) {
+    for (path) |st| if (st.walk[1] > 32) {
         went_down = true;
     };
     try std.testing.expect(went_down);
-    try std.testing.expectEqual([2]f32{ 36, 4 }, path[path.len - 1]);
-    try std.testing.expectEqual(null, try findPath(gpa, .{ .width = 1, .height = 1, .cells = cells[2..3] }, .{ 0, 0 }, .{ 4, 4 }));
+    try std.testing.expectEqual([2]f32{ 36, 4 }, path[path.len - 1].walk);
+    try std.testing.expectEqual(null, try findRoute(gpa, &buf, .{ .width = 1, .height = 1, .cells = cells[2..3] }, &.{}, .{ 0, 0 }, .{ 4, 4 }));
+}
+
+/// Cells (row by row) of `m`'s largest region of cells joined as the route search joins
+/// them (0x4ac200): the 8 neighbours, then a marked cell's `.ap` link (end mark → its
+/// start, start mark → its end, first link in reverse file order) to a walkable exit.
+pub fn largestRegion(gpa: Allocator, m: WalkMap, portals: []const Portal) ![]bool {
+    const n = @as(usize, m.width) * m.height;
+    const label = try gpa.alloc(u32, n);
+    defer gpa.free(label);
+    @memset(label, 0);
+    var queue = try gpa.alloc(u32, n);
+    defer gpa.free(queue);
+    var best: u32 = 0;
+    var best_size: usize = 0;
+    var next: u32 = 1;
+    for (0..n) |start| {
+        if (label[start] != 0 or !m.cells[start].walkable()) continue;
+        label[start] = next;
+        var head: usize = 0;
+        var tail: usize = 1;
+        queue[0] = @intCast(start);
+        while (head < tail) : (head += 1) {
+            const i = queue[head];
+            const x: i32 = @intCast(i % m.width);
+            const y: i32 = @intCast(i / m.width);
+            var near: [10]?[2]i32 = @splat(null);
+            for ([_][2]i32{ .{ -1, -1 }, .{ 0, -1 }, .{ 1, -1 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 }, .{ -1, 1 }, .{ -1, 0 } }, 0..) |d, k| near[k] = .{ x + d[0], y + d[1] };
+            const kind = kindAt(m, x, y);
+            for ([_]bool{ true, false }, [_]u8{ 4, 2 }, 8..) |end, bit, k| if (kind & bit != 0) {
+                var l = portals.len;
+                while (l > 0) {
+                    l -= 1;
+                    const c = if (end) portals[l].b else portals[l].a;
+                    if (c[0] != x or c[1] != y) continue;
+                    near[k] = if (end) portals[l].a else portals[l].b;
+                    break;
+                }
+            };
+            for (near) |o| if (o) |c| if (walkable(m, c[0], c[1])) {
+                const j: u32 = @intCast(@as(usize, @intCast(c[1])) * m.width + @as(usize, @intCast(c[0])));
+                if (label[j] != 0) continue;
+                label[j] = next;
+                queue[tail] = j;
+                tail += 1;
+            };
+        }
+        if (tail > best_size) {
+            best_size = tail;
+            best = next;
+        }
+        next += 1;
+    }
+    const out = try gpa.alloc(bool, n);
+    for (out, label) |*o, l| o.* = l == best and best != 0;
+    return out;
+}
+
+test largestRegion {
+    const gpa = std.testing.allocator;
+    var cells: [10]WalkMap.Cell = undefined;
+    // 5×2: walkable 1 1 0 0 1 / 1 0 0 1 0 — the left pair is the bigger region, the
+    // right pair joins diagonally.
+    for (&cells, [_]u8{ 1, 1, 0, 0, 1, 1, 0, 0, 1, 0 }) |*c_, k| c_.* = .{ .kind = k, .height = 0 };
+    const m: WalkMap = .{ .width = 5, .height = 2, .cells = &cells };
+    const r = try largestRegion(gpa, m, &.{});
+    defer gpa.free(r);
+    try std.testing.expectEqualSlices(bool, &.{ true, true, false, false, false, true, false, false, false, false }, r);
+    // A ladder from (1,0) (start mark) to (3,1) (end mark) joins both.
+    cells[1].kind = 1 | 2;
+    cells[8].kind = 1 | 4;
+    const all = try largestRegion(gpa, m, &.{.{ .a = .{ 1, 0 }, .b = .{ 3, 1 } }});
+    defer gpa.free(all);
+    try std.testing.expectEqualSlices(bool, &.{ true, true, false, false, true, true, false, false, true, false }, all);
 }

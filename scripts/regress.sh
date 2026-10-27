@@ -95,6 +95,23 @@ matrixload() {
 }
 medusaload() { medusa_run medusaload autosaveload; }
 
+# 1a. Medusa joins before the observatory is first visited (the cards, then her, as a
+#     player may go): the observatory and its battles are new locations where the party
+#     creates her. She must be of the hero class there (Party.createMissingHeroes, exe
+#     type 6 at 0x481d18), or HERO_EnableEnumerate("Medusa",0) in the crazy-scene trigger
+#     (0x4c199a) did nothing and the scene and battle came again right after the win.
+medusafirst() {
+  play medusafirst oncecheck $(prefix use:03mf_CardYellow:monitors) scene goto:cutscene_medusa scene wait:100 scene \
+    goto:exit2ships wait:60 loot goto:cutscene_girl scene click:1160,300 wait:30 goto:exit2observatory wait:60 loot \
+    use:03mo_CardOrange:CardChecker scene goto:wajcha scene goto:cutscene_base scene goto:fight_stinger loot \
+    pclick:1420,380 wait:300 scene wait:300 scene obj:Medusa || { fail medusafirst "play failed: $(grep -E 'SCENE TWICE|LOOP' "$TMP/medusafirst.log" | head -1)"; return; }
+  n=$(count medusafirst "03_museum_observator: scene 'museum-medusa_crazy'")
+  b=$(count medusafirst "-> 03__museum_medusa'sdeath")
+  if [ "$n" != 1 ] || [ "$b" != 1 ]; then fail medusafirst "scene started $n times, battle $b"; return; fi
+  grep -q "^  medusa: actor .*hero true" "$TMP/medusafirst.log" && { fail medusafirst "Medusa back in the party"; return; }
+  ok medusafirst
+}
+
 # 2. BT walks after the trabant battle when the plank scene ran before
 #    (port-deska puts BT on floor 1; PLACE without a floor means floor 0; 42403d8).
 bt() {
@@ -241,9 +258,11 @@ natothreat() {
 # 11. Recharge (ion rifle, N = 4, 0x4b8490): a strike sets the full N (0x4cf778),
 #     −1 at the start of the enemy turn (0x49844c). A shot on turn 1 shows 3, 2, 1
 #     on turns 2–4; the counter reaches 0 at the enemy turn 4 start, so the next shot
-#     is the counterattack in that enemy turn (heroes auto-play, godmode), and turn 5
-#     shows the full 4 again. A counterattack with a recharging weapon does not fire:
-#     the player gets "Recharging" (0x47c2a6), autoCounter skips.
+#     is Sullivan's on turn 5 (heroes auto-play, godmode) and turn 6 shows 3. (Before
+#     every animation change blended (0x44f910: one-shots end 10 ticks later, so the
+#     idle picks' rand, 0x423019, moved) the turn-4 counter roll succeeded and shot
+#     first.) A counterattack with a recharging weapon does not fire: the player gets
+#     "Recharging" (0x47c2a6), autoCounter skips.
 recharge() {
   play recharge blog godmode level:01__port_park cmd:attack+sullivan+cw_ion_rifle+01pr_garcia1 wait:4000 ||
     { fail recharge "play failed"; return; }
@@ -251,8 +270,8 @@ recharge() {
   ! grep -q "stuck" "$TMP/recharge.log" || { fail recharge "battle stuck: an enemy never entered"; return; }
   shots=$(awk '/^turn [0-9]+: sullivan hits .* with dbg_1_cw_ion_rifle/ { sub(":", "", $2); printf "%s ", $2 }' "$TMP/recharge.log")
   left=$(awk '/^turn [0-9]+: dbg_1_cw_ion_rifle.s recharging/ { sub(":", "", $2); printf "%s:%s ", $2, $NF }' "$TMP/recharge.log")
-  case $shots in "1 4 "*) ;; *) fail recharge "shots on turns $shots, expected 1 4 …"; return ;; esac
-  case $left in "2:3 3:2 4:1 5:4 "*) ;; *) fail recharge "recharge by turn $left, expected 2:3 3:2 4:1 5:4 …"; return ;; esac
+  case $shots in "1 5 "*) ;; *) fail recharge "shots on turns $shots, expected 1 5 …"; return ;; esac
+  case $left in "2:3 3:2 4:1 6:3 "*) ;; *) fail recharge "recharge by turn $left, expected 2:3 3:2 4:1 6:3 …"; return ;; esac
   ok recharge
 }
 
@@ -269,7 +288,8 @@ levelup() {
   # the damage number appeared and rises, "Level up" (+75) appeared before the window.
   grep -q 'console: popup "[0-9][0-9+]*" delay 0 state [123]' "$TMP/levelup.log" ||
     { fail levelup "damage popup did not run under the points window"; return; }
-  grep -q 'console: popup "Level up" delay 0 state [123]' "$TMP/levelup.log" ||
+  # The popup is string.tab text: English or the Russian edition's (cp1251).
+  iconv -f cp1251 -t utf-8 "$TMP/levelup.log" | grep -q -e 'console: popup "Level up" delay 0 state [123]' -e 'console: popup "Уровень персонажа повышен" delay 0 state [123]' ||
     { fail levelup "\"Level up\" did not appear before the points window"; return; }
   phases=$(awk '/console: phase / { printf "%s ", $4 }' "$TMP/levelup.log")
   case $phases in "won "*) fail levelup "battle ended with the points window open ($phases)"; return ;; *" won ") ;; *) fail levelup "battle phases \"$phases\", expected … won"; return ;; esac
@@ -399,6 +419,24 @@ decoy() {
   ok decoy
 }
 
+# 19b. Incubus ball (class 0x4a5840, kind 0): on arrival no strike, it lies with
+#      countdown attack_ball_exp (0) + 3 (0x4a6056); −1 at each enemy turn start
+#      (+0xc0, 0x49844c); at 1 it blows up there (+0xc4 → weapon +0xf0, 0x498650).
+#      Every ball placed in enemy turn N blasts at the start of enemy turn N+2.
+ballcharge() {
+  "$TOOL" battle "$G" 05__lab_incubus 6 >"$TMP/ballcharge.log" 2>&1 ||
+    { fail ballcharge "battle failed"; return; }
+  res=$(awk '/^turn [0-9]+: ball of .* lies/ { sub(":", "", $2); l[$2]++; n++ }
+    /^turn [0-9]+: ball of .* blasts/ { sub(":", "", $2); b[$2]++ }
+    END {
+      if (n == 0) print "no ball lies"
+      for (t in l) if (t + 2 <= 6 && l[t] != b[t + 2]) print "turn " t ": " l[t] " placed, " b[t + 2] + 0 " blasted on turn " t + 2
+      for (t in b) if (b[t] != l[t - 2]) print "turn " t ": " b[t] " blasted, " l[t - 2] + 0 " placed on turn " t - 2
+    }' "$TMP/ballcharge.log")
+  [ -z "$res" ] || { fail ballcharge "$(echo $res)"; return; }
+  ok ballcharge
+}
+
 # 20. No import cycles, no entry-file bypass, no unused pub.
 deps() {
   python3 -I scripts/deps.py . file >"$TMP/deps.log" 2>&1 ||
@@ -456,11 +494,12 @@ sceneonce() {
 #     the level-up window swallows Esc. A new game during the battle transition
 #     drops the transition (no endless saw); a failed load returns to the main menu.
 menublock() {
-  view menublock "w 700;p Escape;w 2;p E;w 2;c 119,444;w 30;p Escape;w 5;x fighters;x aim;q" ||
+  # 800: the hornets' appearance (walk + appearEnd) ends at ~750; Esc/E before it are ignored/skip the turn.
+  view menublock "w 800;p Escape;w 2;p E;w 2;c 119,444;w 30;p Escape;w 5;x fighters;x aim;q" ||
     { fail menublock "viewer failed"; return; }
   grep -q 'console: phase player' "$TMP/menublock.log" || { fail menublock "E under the menu ended the turn"; return; }
   grep -q 'console: aim on' "$TMP/menublock.log" || { fail menublock "panel click under the menu switched aim on"; return; }
-  view menublock "w 700;x exp Sullivan;x attack Sullivan gs_fist_all 01pr_hornet05;w 200;p Escape;w 5;x ui;q" ||
+  view menublock "w 800;x exp Sullivan;x attack Sullivan gs_fist_all 01pr_hornet05;w 200;p Escape;w 5;x ui;q" ||
     { fail menublock "viewer failed (level-up)"; return; }
   grep -q 'console: ui menu false .* modal true' "$TMP/menublock.log" || { fail menublock "Esc opened the menu over the level-up window"; return; }
   view menublock "w 60;x level 01__port_park;w 5;p Escape;w 2;p Down;p Return;w 10;p Escape;w 300;x ui;x whereami;q" 01_port/sprite.dat ||
@@ -496,7 +535,7 @@ strike_ticks() { # log → ticks from the first "pending attack" to the first "p
 }
 strikewait() {
   steps() { s="$1"; i=0; while [ $i -lt "$2" ]; do s="$s;w 1;x fighters"; i=$((i + 1)); done; echo "$s;q"; }
-  view strikewait_uzi "$(steps 'w 700;x attack sullivan cw_chaingun 01pr_hornet05' 200)" ||
+  view strikewait_uzi "$(steps 'w 800;x attack sullivan cw_chaingun 01pr_hornet05' 200)" ||
     { fail strikewait "viewer failed (uzi)"; return; }
   view strikewait_claw "$(steps 'w 900;x attack 03cr_cutterpill1 03cr_cutterpill1_sa sullivan' 260)" 03__museum_corner/sprite.dat ||
     { fail strikewait "viewer failed (claw)"; return; }
@@ -517,12 +556,13 @@ decorpick() {
 
 # Sullivan's radio in the museum NATO scene (museum-fakenato): WEAPON("Sullivan",
 # "transmitter") (0x478500) puts transmitter.msh on his one_hand point for the radio
-# lines; WEAPON("Sullivan") takes it away.
+# lines; WEAPON("Sullivan") takes it away. Sampled every 100 ticks: the lines' timing
+# differs by edition (voice lengths), so only the order is checked.
 radio() {
-  view radio "w 30;x scene museum-fakenato;w 1600;x where Sullivan;w 600;x where Sullivan;q" 03_museum/sprite.dat ||
+  view radio "w 30;x scene museum-fakenato$(i=0; while [ $i -lt 32 ]; do printf ';w 100;x where Sullivan'; i=$((i + 1)); done);q" 03_museum/sprite.dat ||
     { fail radio "viewer failed"; return; }
-  grep 'console: bg' "$TMP/radio.log" | head -1 | grep -q "weapon 'transmitter'" &&
-    grep 'console: bg' "$TMP/radio.log" | tail -1 | grep -q "weapon ''" || { fail radio "$(grep 'console: bg' "$TMP/radio.log" | tr '\n' ' ')"; return; }
+  grep -a 'console: bg' "$TMP/radio.log" | awk "/weapon 'transmitter'/ { on = 1 } on && /weapon ''/ { off = 1 } END { exit !off }" ||
+    { fail radio "the transmitter was not taken and put away: $(grep -a 'console: bg' "$TMP/radio.log" | grep -o "weapon '[a-z]*'" | uniq | tr '\n' ' ')"; return; }
   ok radio
 }
 
@@ -545,6 +585,19 @@ medusafx() {
 }
 morphfx() { leftfx morphfx $(prefix use:matrix:work_station) esc:lab-lamare_dying; }
 
-ALL="boat medusa medusaload matrixload sawtime bt ladder ladderclick labload sideline counterkill counterhand tranq scenewalk natohp natothreat recharge levelup shadowfloor badsave turncam aimclick barrelchain barrelexp barrelnovictim barrelfx decorpick radio strikewait decoy toolsmoke sceneonce menublock medusafx morphfx deps"
+# A location left before a save is entered with the party: its restore() places the
+# selected hero (01_port_chief: PlaceActor(GUI_GetSelectedHero(),"capt_start"),
+# DisableHeroes). The save's stale copy kept Cole in the booth while Thierry, selected,
+# went unplaced and could not be moved.
+booth() {
+  play booth wait:300 scene hero:Sullivan level:01_port_chief wait:30 level:01_port wait:30 \
+    savefile:"$TMP/booth.sav" loadsave:"$TMP/booth.sav" hero:Trantigne level:01_port_chief wait:30 heroes ||
+    { fail booth "play failed"; return; }
+  grep -q "  trantigne (selected): on bg" "$TMP/booth.log" && grep -q "  sullivan: off" "$TMP/booth.log" ||
+    { fail booth "$(grep -A3 '^> heroes' "$TMP/booth.log" | tr '\n' ' ')"; return; }
+  ok booth
+}
+
+ALL="boat medusa medusaload medusafirst matrixload sawtime bt ladder ladderclick labload sideline counterkill counterhand tranq scenewalk natohp natothreat recharge levelup shadowfloor badsave turncam aimclick barrelchain barrelexp barrelnovictim barrelfx decorpick radio strikewait decoy ballcharge toolsmoke sceneonce menublock medusafx morphfx booth deps"
 for t in ${*:-$ALL}; do $t; done
 exit $FAILED

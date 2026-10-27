@@ -70,7 +70,9 @@ else:
     H.clear(); H.update(G)
     for v in list(G):
         if v not in idx: sc(v)
-    bad=[s for s in sccs if len(s)>1]
+    # The editor is an application of its own, its pages and its state import each other
+    # (app.zig ↔ pages): its cycles are not checked; the engine's and the viewer's are.
+    bad=[s for s in sccs if len(s)>1 and not all(f.startswith('editor/') for f in s)]
     for s in bad: print('FILE CYCLE',len(s),sorted(s))
     # Entry points: another folder imports F/x.zig only through F.zig, unless
     # x.zig itself imports F.zig (it can't be re-exported without a cycle).

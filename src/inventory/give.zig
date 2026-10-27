@@ -44,15 +44,20 @@ pub fn transfer(self: *World, from: *Object, to: *Object, item: *Object, amount:
         }
         return;
     }
+    // Not the exe (it takes the first found, 0x47d880, worn armour too): the backpack's
+    // first, then what is held or worn.
     var left = amount;
-    var i: usize = 0;
-    while (left > 0 and i < self.rt.objects.items.len) : (i += 1) {
-        const o = self.rt.objects.items[i];
-        if (!world.isItem(o)) continue;
-        if (fields.nameId(o) != fields.nameId(item) or !fields.ownerIs(o, from.name) or o.getInt("place") <= 0) continue;
-        if (item_mod.placeOf(o) == .hand) equipment.setHoldState(self, from, null);
-        item_mod.setPlace(o, .backpack);
-        fields.setOwner(o, to.name);
-        left -= 1;
+    for ([_]bool{ false, true }) |worn| {
+        var i: usize = 0;
+        while (left > 0 and i < self.rt.objects.items.len) : (i += 1) {
+            const o = self.rt.objects.items[i];
+            if (!world.isItem(o)) continue;
+            if (fields.nameId(o) != fields.nameId(item) or !fields.ownerIs(o, from.name) or o.getInt("place") <= 0) continue;
+            if ((item_mod.placeOf(o) != .backpack) != worn) continue;
+            if (item_mod.placeOf(o) == .hand) equipment.setHoldState(self, from, null);
+            item_mod.setPlace(o, .backpack);
+            fields.setOwner(o, to.name);
+            left -= 1;
+        }
     }
 }

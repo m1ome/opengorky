@@ -70,7 +70,7 @@ pub fn rasterPool(io: Io) *og.render.raster.Canvas.Pool {
 }
 
 /// Actor layer and its textures, `ss` times finer than the 640×480 screen.
-pub fn makeLayer(self: *LevelView, ss: u32) !void {
+pub fn makeLayer(self: *LevelView, ss: u32, lw: u32) !void {
     const r = self.renderer;
     if (self.layer) |*l| l.deinit(self.gpa);
     self.layer = null;
@@ -80,12 +80,13 @@ pub fn makeLayer(self: *LevelView, ss: u32) !void {
     self.layer_tex = null;
     self.glow_tex = null;
     self.screen_tex = null;
-    self.layer = try render_layer.Layer.initScaled(self.gpa, 640, 480, ss);
+    self.layer = try render_layer.Layer.initScaled(self.gpa, lw, 480, ss);
     self.ss = ss;
+    self.layer_w = lw;
     // New texture has undefined contents: the first upload is whole.
-    self.tex_regions[0] = .{ .x0 = 0, .y0 = 0, .x1 = 640 * ss, .y1 = 480 * ss };
+    self.tex_regions[0] = .{ .x0 = 0, .y0 = 0, .x1 = lw * ss, .y1 = 480 * ss };
     self.n_tex_regions = 1;
-    const w: c_int = @intCast(640 * ss);
+    const w: c_int = @intCast(lw * ss);
     const h: c_int = @intCast(480 * ss);
     self.layer_tex = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_STREAMING, w, h);
     if (self.layer_tex) |t| {

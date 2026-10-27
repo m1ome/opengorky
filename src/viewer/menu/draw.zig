@@ -5,6 +5,13 @@ const menu_slots = @import("slots.zig");
 const menu_mod = @import("../menu.zig");
 const Menu = menu_mod.Menu;
 const og = @import("opengorky");
+const adj = og.formats.adjust;
+
+/// Brightness `name` (0…255, the shipped 255) as a grey tint.
+fn grey3(name: []const u8) [3]u8 {
+    const v: u8 = @intCast(std.math.clamp(adj.getInt(name, 255), 0, 255));
+    return .{ v, v, v };
+}
 const c = @import("sdl");
 const gfx = @import("../media/gfx.zig");
 const loadTex = @import("font.zig").loadTex;
@@ -24,7 +31,7 @@ fn drawCredits(self: *Menu, r: *c.SDL_Renderer) !void {
         const y = 34 * (@as(i64, @intCast(k)) - first) - shift;
         if (y < -40 or y > 480) continue;
         const f = &self.credits_sets[@min(row.charset, 9)];
-        const color: [3]u8 = if (row.title) .{ 104, 168, 136 } else .{ 112, 136, 88 };
+        const color: [3]u8 = if (row.title) adj.getRgb("cftCreditsTitle", .{ 104, 168, 136 }) else adj.getRgb("cftCreditsNormal", .{ 112, 136, 88 });
         const w: i64 = @intCast(f.measure(row.text));
         f.draw(self.text, @intCast(320 - @divTrunc(w, 2)), @intCast(y), row.text, color);
     }
@@ -99,10 +106,12 @@ fn drawScene(self: *Menu, r: *c.SDL_Renderer, mouse_in: [2]f32) !void {
     const m = self.modes;
     const white: [3]u8 = .{ 255, 255, 255 };
     // 1. Grey 60 (menu_fade_intensity): the light map.
-    try gfx.check(c.SDL_SetRenderDrawColor(r, 60, 60, 60, 255));
+    const grey: u8 = @intCast(std.math.clamp(adj.getInt("menu_fade_intensity", 60), 0, 255));
+    try gfx.check(c.SDL_SetRenderDrawColor(r, grey, grey, grey, 255));
     try gfx.check(c.SDL_RenderClear(r));
-    // 2–3. Spot behind the cursor (400×400, 255,255,150) and the logo halo.
-    try quad(r, self.circle, m.add, .{ 255, 255, 150 }, mouse[0] - 200, mouse[1] - 200, 400, 400);
+    // 2–3. Spot behind the cursor (menu_fade_size 400, menu_light_color 255,255,150) and the logo halo.
+    const spot: f32 = @floatFromInt(adj.getInt("menu_fade_size", 400));
+    try quad(r, self.circle, m.add, adj.getRgb("menu_light_color", .{ 255, 255, 150 }), mouse[0] - spot / 2, mouse[1] - spot / 2, spot, spot);
     try quad(r, self.logo_light, m.add, white, -30, -30, 480, 212);
     const list = self.items();
     const sel = self.selected[@backingInt(self.screen)];
@@ -136,7 +145,6 @@ fn drawScene(self: *Menu, r: *c.SDL_Renderer, mouse_in: [2]f32) !void {
 fn drawFlares(self: *Menu, r: *c.SDL_Renderer, mouse_in: [2]f32) !void {
     const mouse = [2]f32{ @min(mouse_in[0], 637), @min(mouse_in[1], 477) };
     const m = self.modes;
-    const white: [3]u8 = .{ 255, 255, 255 };
     // Star 200×300 (menu_flare_width/height, brightness menu_flare_intensity 255;
     // 0x416763…0x4167c4). The last row of `menuflare.3df` is artist junk
     // (16,16,8,16… across), visible in the exe as a faint line under the star.
@@ -146,12 +154,19 @@ fn drawFlares(self: *Menu, r: *c.SDL_Renderer, mouse_in: [2]f32) !void {
         var fh: f32 = 0;
         _ = c.SDL_GetTextureSize(t, &fw, &fh);
         const src: c.SDL_FRect = .{ .x = 0, .y = 0, .w = fw, .h = @max(1, fh - 1) };
-        try quadSrc(r, t, &src, m.add, white, mouse[0] - 100, mouse[1] - 150, 200, 300);
+        const w: f32 = @floatFromInt(adj.getInt("menu_flare_width", 200));
+        const h: f32 = @floatFromInt(adj.getInt("menu_flare_height", 300));
+        try quadSrc(r, t, &src, m.add, grey3("menu_flare_intensity"), mouse[0] - w / 2, mouse[1] - h / 2, w, h);
     }
-    const l1 = [2]f32{ 320 + (320 - mouse[0]) * 0.4, 240 + (240 - mouse[1]) * 0.4 };
-    try quad(r, self.lens, m.screen, white, l1[0] - 50, l1[1] - 50, 100, 100);
-    const l2 = [2]f32{ 320 + (320 - mouse[0]), 240 + (240 - mouse[1]) };
-    try quad(r, self.lens2, m.screen, white, l2[0] - 25, l2[1] - 25, 50, 50);
+    // Lenses mirrored through the centre at menu_lens_dist / menu_lens2_dist.
+    const d1 = adj.getFloat("menu_lens_dist", 0.4);
+    const s1: f32 = @floatFromInt(adj.getInt("menu_lens_size", 100));
+    const l1 = [2]f32{ 320 + (320 - mouse[0]) * d1, 240 + (240 - mouse[1]) * d1 };
+    try quad(r, self.lens, m.screen, grey3("menu_lens_intensity"), l1[0] - s1 / 2, l1[1] - s1 / 2, s1, s1);
+    const d2 = adj.getFloat("menu_lens2_dist", 1);
+    const s2: f32 = @floatFromInt(adj.getInt("menu_lens2_size", 50));
+    const l2 = [2]f32{ 320 + (320 - mouse[0]) * d2, 240 + (240 - mouse[1]) * d2 };
+    try quad(r, self.lens2, m.screen, grey3("menu_lens2_intensity"), l2[0] - s2 / 2, l2[1] - s2 / 2, s2, s2);
 }
 
 /// Selection under the mouse only if the mouse moved (0x415b42); a change plays a sound.

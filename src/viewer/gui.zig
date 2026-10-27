@@ -117,6 +117,8 @@ pub const Gui = struct {
     raport: gfx.Frames = .{},
     report_open: bool = false,
     report_scroll: usize = 0,
+    /// The report's scrollbar thumb held (dragged).
+    report_drag: bool = false,
     report_done: bool = false,
     /// Quick list (`item_list.spr` at (83, 185), 0x4b0ed0): open, give mode, scroll;
     /// in give mode the picked item waits for a portrait click.
@@ -176,6 +178,8 @@ pub const Gui = struct {
     win_text: ?og.formats.image.Image = null,
     win_tex: ?*c.SDL_Texture = null,
     panel: gfx.Frames = .{},
+    /// `scaling = adaptive`: the riveted plate beside the panel (assets/panel-plate.png).
+    plate: ?*c.SDL_Texture = null,
     /// Portraits `icons\<spriteFile>.spr` by hero name (lowercase).
     portraits: std.StringHashMapUnmanaged(gfx.Frames) = .empty,
     cursor: gfx.Frames = .{},
@@ -195,6 +199,11 @@ pub const Gui = struct {
         errdefer g.deinit();
         const ln = lang.language(io, gpa, dat);
         g.panel = try loadSprite(io, gpa, r, arc, "game_box.spr");
+        if (og.formats.jpeg.decode(gpa, @embedFile("panel_plate_png"))) |img| {
+            var im = img;
+            defer im.deinit(gpa);
+            g.plate = gfx.textureLinear(r, im) catch null;
+        } else |_| {}
         g.cursor = loadSprite(io, gpa, r, arc, "mouse.spr") catch .{};
         g.fighter_info = loadSprite(io, gpa, r, arc, "FighterInfo.spr") catch .{};
         g.border = loadSprite(io, gpa, r, arc, "border.spr") catch .{};
@@ -277,6 +286,7 @@ pub const Gui = struct {
         if (self.win_tex) |t| c.SDL_DestroyTexture(t);
         if (self.win_text) |*t| t.deinit(self.gpa);
         if (self.text_tex) |t| c.SDL_DestroyTexture(t);
+        if (self.plate) |t| c.SDL_DestroyTexture(t);
         self.texts.deinit();
         if (self.text) |*t| t.deinit(self.gpa);
         if (self.font_bytes.len > 0) self.gpa.free(self.font_bytes);
@@ -321,23 +331,6 @@ pub const Gui = struct {
     pub const ShortItem = og.inventory.list.Entry;
 
     pub const short_rows = [4][4]f32{ .{ 6, 9, 80, 61 }, .{ 6, 61, 80, 114 }, .{ 6, 114, 80, 166 }, .{ 6, 166, 80, 219 } };
-
-    /// Monster icon by nameID for the report (table 0x523f00).
-    pub const monster_icons = [_]struct { id: i32, name: []const u8 }{
-        .{ .id = 125, .name = "cripple" },         .{ .id = 105, .name = "cutterpil" },       .{ .id = 107, .name = "fang" },
-        .{ .id = 124, .name = "fatman" },          .{ .id = 101, .name = "garcia" },          .{ .id = 113, .name = "grandma" },
-        .{ .id = 131, .name = "guard" },           .{ .id = 122, .name = "harvester" },       .{ .id = 118, .name = "headnail" },
-        .{ .id = 128, .name = "hornet" },          .{ .id = 108, .name = "hound" },           .{ .id = 138, .name = "incubus" },
-        .{ .id = 120, .name = "invisible" },       .{ .id = 100, .name = "jet elmer" },       .{ .id = 115, .name = "judge" },
-        .{ .id = 116, .name = "judgeslave" },      .{ .id = 129, .name = "lillith" },         .{ .id = 135, .name = "lillith" },
-        .{ .id = 137, .name = "lucy" },            .{ .id = 119, .name = "medusa_rap" },      .{ .id = 139, .name = "messiah" },
-        .{ .id = 130, .name = "needle" },          .{ .id = 121, .name = "paingod" },         .{ .id = 132, .name = "puppet" },
-        .{ .id = 106, .name = "rc28" },            .{ .id = 126, .name = "reverend insect" }, .{ .id = 136, .name = "schizo family" },
-        .{ .id = 109, .name = "sinner" },          .{ .id = 123, .name = "sister of mercy" }, .{ .id = 110, .name = "smoke" },
-        .{ .id = 102, .name = "sphinks" },         .{ .id = 133, .name = "squeaker" },        .{ .id = 127, .name = "stinger" },
-        .{ .id = 114, .name = "wnuczek" },         .{ .id = 27, .name = "kozow_rap" },        .{ .id = 141, .name = "nato_capitan_rap" },
-        .{ .id = 25, .name = "nato_soldier_rap" }, .{ .id = 28, .name = "specnaz_rap" },      .{ .id = 142, .name = "Lamare" },
-    };
 };
 
 fn loadSprite(io: Io, gpa: Allocator, r: *c.SDL_Renderer, arc: archive.Archive, name: []const u8) !gfx.Frames {

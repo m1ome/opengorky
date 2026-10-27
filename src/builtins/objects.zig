@@ -122,7 +122,3 @@ pub fn biGetNameID(ctx: *anyopaque, rt: *Runtime, self: *Object, args: []const V
     const o = args_mod.objectArg(ctx, rt, self, args) orelse return .{ .int = -1 };
     return .{ .int = fields.nameId(o) };
 }
-
-pub fn biNoop(_: *anyopaque, _: *Runtime, _: *Object, _: []const Value) anyerror!Value {
-    return .zero;
-}

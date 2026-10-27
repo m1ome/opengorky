@@ -262,8 +262,10 @@ pub const InventoryView = struct {
         self.current = if (self.heroObj(w)) |h| inv.equipment.equipped(w, h, .hand) else null;
     }
 
-    /// Close (0x42dd70): the cursor item goes back to the backpack.
+    /// Close (0x42dd70): the hero shown is left (0x42dd40), the cursor item goes back to
+    /// the backpack.
     pub fn close(self: *InventoryView, w: *World) void {
+        if (self.open and self.world == w) if (self.heroObj(w)) |h| inv.equipment.leaveInventory(w, h);
         self.sync(w);
         if (self.carried) |o| inv.item.setPlace(o, .backpack);
         self.carried = null;

@@ -1,7 +1,6 @@
 //! Field effects: projectiles, beams, flashes, fire, gas, explosions, trails — attached to model points and drawn.
 
 const std = @import("std");
-const actors_view = @import("actors.zig");
 const billboards = @import("billboards.zig");
 const place = @import("place.zig");
 const level_view = @import("../level.zig");
@@ -59,15 +58,15 @@ pub fn drawEffects(self: *LevelView, scroll: [2]f32) !void {
     const view: ViewSink = .{ .v = v, .ctx = ctx };
     if (!combat) try billboards.fireCells(self, view);
     if (w.battle) |*b| {
-        // Burning fighter (0x4dc700): "Flame" additive over its rectangle.
+        // Burning fighter (0x4dc700): "Flame" additive over the model's screen box
+        // (+0x64…+0x70) raised by height/8, brightness alpha·fighter_fire_intensity.
         for (b.fighters.items, 0..) |f, i| {
             if (!f.alive() or f.burning <= 0) continue;
-            const tall = actors_view.modelHeight(self, f.obj) orelse continue;
-            const foot = cam.project(og.fields.pos(f.obj));
-            const head = cam.project(level_view.addZ(og.fields.pos(f.obj), tall));
-            const h = @max(8, foot.y - head.y);
-            const wdt = h * 0.6;
-            try v.screenQuad("flame", @intCast((ticks + i * 5) % 15), .{ foot.x - scroll[0] - wdt / 2, head.y - scroll[1] - h / 8, wdt, h }, 1, .{ 1, 1, 1 }, .add);
+            const a = og.state.world.actorOf(f.obj);
+            const box = a.screen_box orelse continue;
+            const h = box[3] - box[1];
+            const k = og.num.toF32(a.alpha) / 255 * og.formats.adjust.getFloat("fighter_fire_intensity", 1);
+            try v.screenQuad("flame", @intCast((ticks + i * 5) % 15), .{ box[0] - scroll[0], box[1] - @trunc(h / 8) - scroll[1], box[2] - box[0], h }, k, .{ 1, 1, 1 }, .add);
         }
     }
     _ = self.frame_arena.reset(.retain_capacity);
@@ -75,7 +74,14 @@ pub fn drawEffects(self: *LevelView, scroll: [2]f32) !void {
     // (actors_view.attachedEffects).
     if (!combat) try billboards.incubusGlow(self, view);
     // Morph (0x4260a0): mesh "nowy" ×(3, 3, 4)·aS additive at brightness 0.5·p.
-    for (e.morphs.items) |mo| try v.drawMeshAdd(ctx, "nowy", mo.pos, .{ 0, 1, 0 }, as * 3, 4.0 / 3.0, 0.5 * mo.p);
+    {
+        // Glow ×(morf_scale, morf_scale, morf_scale_z)·aS at morf_a·p (0x426140, 0x426179).
+        const adj = og.formats.adjust;
+        const ms = adj.getFloat("morf_scale", 3);
+        const mz = adj.getFloat("morf_scale_z", 4);
+        const ma = adj.getFloat("morf_a", 0.5);
+        for (e.morphs.items) |mo| try v.drawMeshAdd(ctx, "nowy", mo.pos, .{ 0, 1, 0 }, as * ms, mz / ms, ma * mo.p);
+    }
     if (!combat) try billboards.morphSparks(self, view);
     // Schizo gas cloud (0x4a95d0): "gas2" in a circle, fades over 30 ticks.
     for (e.clouds.items) |cl| {
@@ -124,17 +130,33 @@ pub fn drawEffects(self: *LevelView, scroll: [2]f32) !void {
     // colour from attack_flame_col2 (60,60,255) when new to attack_flame_col
     // (255,160,0) when old (t = remaining life / 16); random flame2 frame, ±5·aS
     // jitter on x, y.
+    const flame = flameLook();
     for (e.flames.items, 0..) |fl, fi| for (fl.parts.items, 0..) |p, i| {
         const h = std.hash.Murmur2_32.hashUint64(ticks *% 2654435761 +% i *% 40503 +% fi);
         const jx = (og.num.toF32(h % 10) - 5) * as;
         const jy = (og.num.toF32((h / 10) % 10) - 5) * as;
         const q = cam.project(.{ p.pos[0] + jx, p.pos[1] + jy, p.pos[2] });
         const t = 1 - og.num.toF32(p.age) / og.num.toF32(fl.life);
-        const half = @min(og.num.toF32(p.age) * 1.6 + 8, 160);
-        const rgb = [3]f32{ (255 + (60 - 255) * t) / 255, (160 + (60 - 160) * t) / 255, (255 * t) / 255 };
+        const half = @min(og.num.toF32(p.age) * flame.scale + flame.add, flame.range);
+        var rgb: [3]f32 = undefined;
+        for (&rgb, flame.old, flame.new) |*c, o, n| c.* = (o + (n - o) * t) / 255;
         const fr: u32 = @intCast((h / 100) % 15);
         try v.screenQuad("flame2", fr, .{ q.x - scroll[0] - half, q.y - scroll[1] - half, 2 * half, 2 * half }, 1, rgb, .add);
     };
+}
+
+/// Flamethrower particle look from adjust.kdt (attack_flame_*): growth, colours old/new.
+fn flameLook() struct { scale: f32, add: f32, range: f32, old: [3]f32, new: [3]f32 } {
+    const adj = og.formats.adjust;
+    const old = adj.getRgb("attack_flame_col", .{ 255, 160, 0 });
+    const new = adj.getRgb("attack_flame_col2", .{ 60, 60, 255 });
+    var o: [3]f32 = undefined;
+    var n: [3]f32 = undefined;
+    for (&o, &n, old, new) |*a, *b, x, y| {
+        a.* = @floatFromInt(x);
+        b.* = @floatFromInt(y);
+    }
+    return .{ .scale = adj.getFloat("attack_flame_scale", 1.6), .add = @floatFromInt(adj.getInt("attack_flame_add", 8)), .range = @floatFromInt(adj.getInt("attack_flame_range", 160)), .old = o, .new = n };
 }
 
 /// One beam: billboard chain, ion rifle, guard laser, Medusa current or lightning.
@@ -175,7 +197,10 @@ fn drawBeam(self: *LevelView, v: *EffectsView, ctx: @import("effects_view.zig").
                 d = .{ ax[1][0] * tc - ax[1][1] * ts, ax[1][0] * ts + ax[1][1] * tc, 0 };
             };
             const side = [3]f32{ -d[1] * half, d[0] * half, 0 };
-            for ([_]f32{ 155, -267 }, [_]f32{ 220, -220 }) |start, step| {
+            // The second run starts where the first ends (25·220) less attack_ion_vk.
+            const vs = og.formats.adjust.getFloat("attack_ion_vs", -155);
+            const vk = og.formats.adjust.getFloat("attack_ion_vk", 5922);
+            for ([_]f32{ -vs, -vs + 25 * 220 - vk }, [_]f32{ 220, -220 }) |start, step| {
                 var p = [3]f32{ o[0] + d[0] * start * as, o[1] + d[1] * start * as, o[2] };
                 for (0..25) |_| {
                     const q = [3]f32{ p[0] + d[0] * step * as, p[1] + d[1] * step * as, p[2] };

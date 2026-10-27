@@ -66,6 +66,8 @@ pub const Native = struct {
     /// moves on in the global list; its queue is reset (0x427c50) and its position kept as a
     /// shadow (0x42af20).
     fighter: bool = false,
+    /// Made from a script file of the location's archive (not by a script: Item_New…).
+    from_file: bool = false,
     /// Came from the party when the location was created (+0x74, global-list object);
     /// post_init is not called (0x4319c4…0x4319cf).
     from_party: bool = false,

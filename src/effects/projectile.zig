@@ -6,10 +6,16 @@ const vec = @import("../vec.zig");
 const num = @import("../num.zig");
 const Rand = @import("../crt_rand.zig").Rand;
 const light = @import("light.zig");
+const adjust = @import("../formats.zig").adjust;
+const Object = @import("../script.zig").object.Object;
 
 /// Grenade (0x49c840): attack_grenade_angle and gravity from adjust.kdt.
-const grenade_angle: f32 = 0.9;
-const gravity: f32 = 700;
+fn grenadeAngle() f32 {
+    return adjust.getFloat("attack_grenade_angle", 0.9);
+}
+fn gravity() f32 {
+    return adjust.getFloat("gravity", 700);
+}
 
 /// What a projectile tick touches besides itself: its trail and the light pool.
 pub const Ctx = struct {
@@ -76,7 +82,7 @@ pub const Projectile = struct {
     /// Cutter Pill bullet (0x49dd70): chaingun.msh with "arrows" (mode 2) ×mesh_scale·aS
     /// along the flight direction, at pos − dir·240·aS.
     bullet: bool = false,
-    /// Ball (0x4a5840): hangs in place for `hold` ticks (+0x3b4, to 0 — 0x4a5f35), grows from
+    /// Ball (0x4a5840): hangs at the owner's hands for `hold` ticks (+0x3b4, to 0 — 0x4a5f35), grows from
     /// 0.1 by `grow` per tick to mesh_scale (+0x3cc, +0x3d0; attack_ball_ds 0.08); `k` is the
     /// current scale fraction.
     hold: u32 = 0,
@@ -84,10 +90,21 @@ pub const Projectile = struct {
     k: f32 = 1,
     /// Ball glow pulse (0x4a5d79…0x4a5e4d); null for other projectiles.
     ball: ?Ball = null,
+    /// Ball: the fighter (+0x384) whose "kula1"/"kula2" midpoint it sits at while held
+    /// (0x4a5cac, `spawn.aimBalls`); null once the fighter is removed (0x4a5c50).
+    owner: ?*Object = null,
+    /// Incubus ball (kind 0, +0x3bc): on arrival it lies there glowing as a charge
+    /// (`lying`, countdown +0x3b8 set at 0x4a6056) until the battle blows it up (0x4a61d0).
+    charge: bool = false,
+    lying: bool = false,
     done: bool = false,
 
     pub fn tick(p: *Projectile, c: Ctx) bool {
         if (p.done) return false;
+        // Ball light (+0x3d8, 0x4a5d12): at the ball's position before this tick's flight;
+        // brightens by (0.02, 0.025, 1/30) a tick while blue < 0.9 (0x4a5d39).
+        const before = p.pos;
+        if (p.ball != null and p.light_rgb[2] < 0.9) p.light_rgb = .{ p.light_rgb[0] + 0.02, p.light_rgb[1] + 0.025, p.light_rgb[2] + 1.0 / 30.0 };
         fly(p);
         // The projectile feeds its trail a point trail_back·aS behind it (0x49c639,
         // 0x4a8ba2); on arrival the trail detaches (0x49c6d0).
@@ -98,14 +115,16 @@ pub const Projectile = struct {
             break;
         };
         // Light follows the projectile (0x49cbb8: light position = projectile position).
-        if (p.light_range > 0) light.add(c.lights, c.gpa, .{ .pos = p.pos, .color = p.light_rgb, .range = p.light_range, .left = 1 });
+        if (p.light_range > 0) light.add(c.lights, c.gpa, .{ .pos = if (p.ball != null) before else p.pos, .color = p.light_rgb, .range = p.light_range, .left = 1 });
         return true;
     }
 };
 
 /// attack_ball_ms (0x6c520c): the ball draw (0x4a6280) divides its scale by it for
 /// both the Incubus and the Stinger ball.
-pub const attack_ball_ms: f32 = 0.8;
+pub fn attackBallMs() f32 {
+    return adjust.getFloat("attack_ball_ms", 0.8);
+}
 
 /// Ball (0x4a5840) glow state: two triangle waves `a`, `b` in ±0.2 (steps 0.024 and
 /// 0.018, +0x3dc…+0x3e8) and two "kula" frames (+0x3f0, +0x3f4) that advance mod 3
@@ -133,6 +152,20 @@ const Ball = struct {
     }
 };
 
+test "ball light (0x4a5d12): where the ball was before the tick, brightening to blue 0.9" {
+    const gpa = std.testing.allocator;
+    var trails: std.ArrayList(Trail) = .empty;
+    var lights: std.ArrayList(light.Light) = .empty;
+    defer lights.deinit(gpa);
+    var p: Projectile = .{ .pos = .{ 0, 0, 0 }, .start = .{ 0, 0, 0 }, .target = .{ 1e6, 0, 0 }, .dir = .{ 1, 0, 0 }, .speed = 10, .max_speed = 10, .ball = .{}, .light_range = 165, .light_rgb = @splat(0.1) };
+    const c: Ctx = .{ .trails = &trails, .lights = &lights, .gpa = gpa, .now = 0 };
+    _ = p.tick(c);
+    try std.testing.expectEqual([3]f32{ 0, 0, 0 }, lights.items[0].pos);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.12), lights.items[0].color[0], 1e-6);
+    for (0..40) |_| _ = p.tick(c);
+    try std.testing.expect(p.light_rgb[2] >= 0.9 and p.light_rgb[2] < 0.94);
+}
+
 test "Ball.tick: a clamps at ±0.2 and flips, f2 steps at +0.2, f1 at −0.2" {
     var b: Ball = .{};
     for (0..9) |_| b.tick();
@@ -155,8 +188,8 @@ pub fn prepare(p: Projectile) Projectile {
         // (0x592764), both in speedScale units: T = √(2(tgθ·D + H)/g), vz = gT/2 − H/T,
         // vh = vz/tgθ. Direction +0x39c is the unit 3D vector to the target with z zeroed
         // (0x49c9c0): in x, y it covers exactly Dxy and lands at floor height.
-        const theta = grenade_angle;
-        const g = gravity;
+        const theta = grenadeAngle();
+        const g = gravity();
         const d = [3]f32{ p.target[0] - p.start[0], p.target[1] - p.start[1], p.target[2] - p.start[2] };
         const l = vec.len(d);
         const dd = l / x.speed_scale;
@@ -181,8 +214,17 @@ fn fly(p: *Projectile) void {
     p.roll += p.spin;
     if (p.ball) |*b| b.tick();
     if (p.grow > 0) p.k = @min(1, p.k + p.grow);
+    // Lying charge: only the glow moves (0x4a5ee6: +0x3b8 ≠ 0 skips the flight).
+    if (p.lying) return;
     if (p.hold > 0) {
         p.hold -= 1;
+        // Released (0x4a6087): flies from where it hangs (the hands) to the target.
+        if (p.hold == 0 and p.ball != null) {
+            p.start = p.pos;
+            const d = [3]f32{ p.target[0] - p.pos[0], p.target[1] - p.pos[1], p.target[2] - p.pos[2] };
+            const l = vec.len(d);
+            if (l > 0) p.dir = .{ d[0] / l, d[1] / l, d[2] / l };
+        }
         return;
     }
     if (p.arc) {
@@ -191,7 +233,7 @@ fn fly(p: *Projectile) void {
         p.pos = .{
             p.start[0] + p.dir[0] * p.vh * t * p.speed_scale,
             p.start[1] + p.dir[1] * p.vh * t * p.speed_scale,
-            p.start[2] + (p.vz * t - gravity / 2.0 * t * t) * p.speed_scale,
+            p.start[2] + (p.vz * t - gravity() / 2.0 * t * t) * p.speed_scale,
         };
         if (p.t >= p.flight) p.done = true;
     } else {
@@ -202,7 +244,7 @@ fn fly(p: *Projectile) void {
         const along = d[0] * p.dir[0] + d[1] * p.dir[1] + d[2] * p.dir[2];
         if (along * along >= full[0] * full[0] + full[1] * full[1] + full[2] * full[2]) {
             p.pos = p.target;
-            p.done = true;
+            if (p.charge) p.lying = true else p.done = true;
         }
     }
 }

@@ -144,11 +144,26 @@ pub fn drawGlyphsBase(self: *Gui, r: *c.SDL_Renderer, glyphs: *const [256]?og.fo
     };
 }
 
+/// `scaling = adaptive`: a riveted plate on each side of the wide frame at the
+/// panel's low part (rows 16…68), so scrolling past the background's bottom (the
+/// exe's 50-row margin) shows no black beside the 640-wide panel. 9-grid: its frame
+/// and rivets keep their size, the middle stretches.
+fn drawPanelSides(self: *Gui, r: *c.SDL_Renderer) !void {
+    if (gfx.wide == 0) return;
+    const plate = self.plate orelse return;
+    gfx.wholeView(r);
+    defer gfx.middleView(r);
+    const y0: f32 = 16;
+    for ([2]f32{ 0, 640 + gfx.wide }) |x|
+        try gfx.check(c.SDL_RenderTexture9Grid(r, plate, null, 33, 33, 45, 45, 0.35, &.{ .x = x, .y = panel_y + y0, .w = gfx.wide, .h = panel_h - y0 }));
+}
+
 /// Panel (0x4b1d50): frame 0, portraits (frame 2; 3 when spent in battle), selection
 /// frame (frame 3), health bar (frame 2, 38×7) and "hp/max", round number, pressed
 /// button, shutters.
 pub fn drawPanel(self: *Gui, r: *c.SDL_Renderer, w: *og.state.world.World) !void {
     tickPanel(self, w);
+    if (self.panel.len() > 0) try drawPanelSides(self, r);
     if (self.panel.len() > 0) try self.panel.draw(r, 0, 0, panel_y);
     const heroes = w.party();
     if (self.text) |*t| @memset(t.pixels, 0);
@@ -320,8 +335,12 @@ pub fn drawHeroFrame(self: *Gui, r: *c.SDL_Renderer, box: [4]f32) !void {
     try self.border.draw(r, 3, box[2] - 7, box[3] - 5);
 }
 
-pub fn drawCursor(self: *Gui, r: *c.SDL_Renderer, x: f32, y: f32) !void {
+pub fn drawCursor(self: *Gui, r: *c.SDL_Renderer, x0: f32, y: f32) !void {
     if (self.cursor.len() == 0) return;
+    // Over the whole frame: the pointer can be over the wide frame's sides.
+    gfx.wholeView(r);
+    defer gfx.middleView(r);
+    const x = x0 + gfx.wide;
     const k = if (self.cursor_frame < self.cursor.len()) self.cursor_frame else 0;
     self.cursor_frame = 0;
     if (self.cursor_anchor == .push and self.cursor.len() > 2) {

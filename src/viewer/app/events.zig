@@ -14,11 +14,19 @@ const mouse = @import("mouse.zig");
 const input_ctx = @import("input_ctx.zig");
 const Flow = input_ctx.Flow;
 const Ctx = input_ctx.Ctx;
+const gfx = @import("../media/gfx.zig");
 
 pub fn handle(v: *Viewer, ctx: *Ctx, raw: c.SDL_Event) !Flow {
     // Mouse in 640×480 canvas coordinates, once for all branches.
     var ev = raw;
     _ = c.SDL_ConvertEventToRenderCoordinates(ctx.renderer, &ev);
+    // A wide frame (`scaling = adaptive`): x from the middle 640's left edge.
+    switch (ev.type) {
+        c.SDL_EVENT_MOUSE_MOTION => ev.motion.x -= gfx.wide,
+        c.SDL_EVENT_MOUSE_BUTTON_DOWN, c.SDL_EVENT_MOUSE_BUTTON_UP => ev.button.x -= gfx.wide,
+        c.SDL_EVENT_MOUSE_WHEEL => ev.wheel.mouse_x -= gfx.wide,
+        else => {},
+    }
     switch (ev.type) {
         c.SDL_EVENT_QUIT => return .quit,
         c.SDL_EVENT_TEXT_INPUT => if (v.menu != null and v.menu.?.open and v.menu.?.editing != null) {

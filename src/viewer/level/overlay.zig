@@ -16,15 +16,19 @@ pub const DialogArt = struct { portrait: ?*gfx.Frames = null, box: ?*gfx.Frames 
 /// Fade, letterbox bars and subtitles on top of everything.
 pub fn drawOverlay(l: *LevelView, r: *c.SDL_Renderer, art: DialogArt) !void {
     const w = l.world;
+    // Bars and fade over the whole (wide) frame.
+    gfx.wholeView(r);
+    const fw = 640 + 2 * gfx.wide;
     if (w.scene.panorama) {
         try gfx.check(c.SDL_SetRenderDrawColor(r, 0, 0, 0, 255));
         const h = @max(0, w.scene.panorama_h);
-        try gfx.check(c.SDL_RenderFillRect(r, &.{ .x = 0, .y = 0, .w = 640, .h = h }));
-        try gfx.check(c.SDL_RenderFillRect(r, &.{ .x = 0, .y = 479 - h, .w = 640, .h = h + 1 }));
+        try gfx.check(c.SDL_RenderFillRect(r, &.{ .x = 0, .y = 0, .w = fw, .h = h }));
+        try gfx.check(c.SDL_RenderFillRect(r, &.{ .x = 0, .y = 479 - h, .w = fw, .h = h + 1 }));
     }
     if (w.scene.fade > 0) {
-        try gfx.fillRect(r, .{ 0, 0, 0, @intFromFloat(w.scene.fade * 255) }, .{ .x = 0, .y = 0, .w = 640, .h = 480 });
+        try gfx.fillRect(r, .{ 0, 0, 0, @intFromFloat(w.scene.fade * 255) }, .{ .x = 0, .y = 0, .w = fw, .h = 480 });
     }
+    gfx.middleView(r);
     if (w.scene.subtitle) |st| {
         if (l.font) |f| try drawDialog(l, r, f, st.speaker, st.text, art) else try drawSubtitle(r, scenes_mod.speakerName(w, st.speaker), st.text);
     }

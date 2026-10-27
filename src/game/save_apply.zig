@@ -45,16 +45,21 @@ pub fn apply(ws: *const WorldState, w: *World) !void {
         n.actor.placed = e.placed;
         n.actor.map = e.map;
         n.actor.state = e.state;
+        n.actor.idle_off = e.idle_off;
+        // Takes effect at the pickIdle below (the exe restores currentAnimID beside it).
+        n.actor.forced_idle = if (e.idle_anim.len == 0) null else try ra.dupe(u8, e.idle_anim);
         n.actor.resetForLoad();
         // Item animation (open/closed box) jumps to its last frame; otherwise the fresh
         // post_init's "closed" would remain.
         if ((e.kind == .item or e.kind == .weapon) and e.anim.len > 0) n.actor.holdLast(try ra.dupe(u8, e.anim), e.anim_reverse);
         try snapshot.restore(w, o, e.vars, e.skills, e.stat_points);
     }
-    // Objects the save lacks (recreated by scripts): delete.
+    // Objects the save lacks: ones scripts made again (Item_New in post_init) are deleted;
+    // a script file of the archive newer than the save (a mod's hero, enemy, box) stays
+    // as created, as in the exe.
     for (w.rt.objects.items) |o| {
         const n = World.nativeOf(o);
-        if (n.kind == .ambient or n.kind == .level) continue;
+        if (n.kind == .ambient or n.kind == .level or n.from_file) continue;
         const known = for (ws.objects) |e| {
             if (std.ascii.eqlIgnoreCase(e.name, o.name)) break true;
         } else false;

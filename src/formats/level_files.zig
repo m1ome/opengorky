@@ -47,6 +47,33 @@ pub fn freePaths(gpa: Allocator, paths: []Path) void {
     gpa.free(paths);
 }
 
+/// `.ap` text of `paths` in the game's layout (Windows lines; the node's angle `%f`, the
+/// rest whole numbers, as 0x4ab326 reads them).
+pub fn encodePaths(gpa: Allocator, paths: []const Path) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.print(gpa, "pathCnt={d}\r\n", .{paths.len});
+    for (paths) |p| {
+        try out.print(gpa, "pathName: {s}\r\n    link: sx {d}, sy {d}, dx {d}, dy {d}\r\n    pointCnt={d}\r\n", .{ p.name, whole(p.link[0]), whole(p.link[1]), whole(p.link[2]), whole(p.link[3]), p.points.len });
+        for (p.points) |pt| try out.print(gpa, "        {d},{d},{d:.6},{d}\r\n", .{ whole(pt[0]), whole(pt[1]), pt[2], whole(pt[3]) });
+        try out.appendSlice(gpa, "\r\n");
+    }
+    return out.toOwnedSlice(gpa);
+}
+
+fn whole(v: f32) i32 {
+    return @intFromFloat(@round(v));
+}
+
+test encodePaths {
+    const src = "pathCnt=1\r\npathName: deska\r\n    link: sx 182, sy 22, dx 189, dy 11\r\n    pointCnt=2\r\n        1460,180,0.000000,135\r\n        1516,92,-1.040000,-44\r\n\r\n";
+    const ps = try parsePaths(std.testing.allocator, src);
+    defer freePaths(std.testing.allocator, ps);
+    const out = try encodePaths(std.testing.allocator, ps);
+    defer std.testing.allocator.free(out);
+    try std.testing.expectEqualStrings(src, out);
+}
+
 // ---------------------------------------------------------------- .ar
 
 pub const Area = struct {
@@ -179,6 +206,28 @@ pub fn parseLights(gpa: Allocator, src: []const u8) Error!Lights {
     };
 }
 
+/// `.lts` text as the game's (C `%f`, CRLF; the exe reads it with the same sscanf formats).
+pub fn encodeLights(gpa: Allocator, l: Lights) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.print(gpa, "omniNo={d}\r\n", .{l.omni.len});
+    for (l.omni) |o| try out.print(gpa, "pos: {d:.6},{d:.6},{d:.6}, color: {d:.6},{d:.6},{d:.6}, range: {d:.6}\r\n", .{
+        cf(o.pos[0]), cf(o.pos[1]), cf(o.pos[2]), cf(o.color[0]), cf(o.color[1]), cf(o.color[2]), cf(o.range),
+    });
+    const a = l.ambient;
+    const dc = l.directional_color;
+    const s = l.shadow_light;
+    try out.print(gpa, "ambient={d:.6},{d:.6},{d:.6}\r\ndirectionalColor={d:.6},{d:.6},{d:.6}\r\nshadowLight={d:.6},{d:.6},{d:.6}\r\nshadowIntensity={d:.6}\r\n", .{
+        cf(a[0]), cf(a[1]), cf(a[2]), cf(dc[0]), cf(dc[1]), cf(dc[2]), cf(s[0]), cf(s[1]), cf(s[2]), cf(l.shadow_intensity),
+    });
+    return out.toOwnedSlice(gpa);
+}
+
+/// As C passes a float to printf: widened to double.
+fn cf(v: f32) f64 {
+    return v;
+}
+
 // ---------------------------------------------------------------- .wm / .wm2
 
 /// Exploration level grid, 8×8 background-pixel cells.
@@ -228,6 +277,18 @@ pub fn parseWalkMap(gpa: Allocator, bytes: []const u8) Error!WalkMap {
     return .{ .width = w, .height = h, .cells = cells };
 }
 
+/// `.wm` bytes of `m` (as parseWalkMap reads them).
+pub fn encodeWalkMap(gpa: Allocator, m: WalkMap) Allocator.Error![]u8 {
+    const out = try gpa.alloc(u8, 8 + m.cells.len * 3);
+    std.mem.writeInt(u32, out[0..4], m.width, .little);
+    std.mem.writeInt(u32, out[4..8], m.height, .little);
+    for (m.cells, 0..) |c, i| {
+        out[8 + i * 3] = c.kind;
+        std.mem.writeInt(i16, out[8 + i * 3 + 1 ..][0..2], c.height, .little);
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------- .cm
 
 /// Battle grid. Cells are in world 3D coordinates and projected by the level's
@@ -255,7 +316,7 @@ pub const CombatMap = struct {
     }
 
     /// Inverse: world point → (gx, gy) in cells.
-    fn toGrid(self: CombatMap, x: f32, y: f32) [2]f32 {
+    pub fn toGrid(self: CombatMap, x: f32, y: f32) [2]f32 {
         const c = @cos(self.rotation);
         const s = @sin(self.rotation);
         const dx = x - self.center[0];
@@ -380,6 +441,23 @@ pub fn parseCombatMap(gpa: Allocator, src: []const u8) Error!CombatMap {
     return m;
 }
 
+/// `.cm` text as the game's (C `%f`, CRLF, blank lines between the parts); a map
+/// read without `heightCnt` (03__museum_monuments) gets `heightCnt=0`.
+pub fn encodeCombatMap(gpa: Allocator, m: CombatMap) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.print(gpa, "centerX={d:.6}\r\ncenterY={d:.6}\r\ncenterZ={d:.6}\r\nrotation={d:.6}\r\nxSize={d:.6}\r\nySize={d:.6}\r\n\r\nwidth={d}\r\nheight={d}\r\n\r\n", .{
+        cf(m.center[0]), cf(m.center[1]), cf(m.center[2]), cf(m.rotation), cf(m.cell_size[0]), cf(m.cell_size[1]), m.width, m.height,
+    });
+    for (0..m.height) |y| {
+        for (m.blocked[y * m.width ..][0..m.width]) |b| try out.append(gpa, if (b) 'O' else '.');
+        try out.appendSlice(gpa, "\r\n");
+    }
+    try out.print(gpa, "\r\nheightCnt={d}\r\n", .{m.heights.len});
+    for (m.heights) |h| try out.print(gpa, "{d} {d} {d}\r\n", .{ h[0], h[1], h[2] });
+    return out.toOwnedSlice(gpa);
+}
+
 // ---------------------------------------------------------------- tests
 
 test parsePaths {
@@ -439,6 +517,19 @@ test parseLights {
     try std.testing.expectEqual(0.5, l.shadow_intensity);
 }
 
+test encodeLights {
+    const gpa = std.testing.allocator;
+    const src = "omniNo=2\r\npos: 1648.724121,-404.325958,118.356354, color: 1.000000,1.000000,0.790000, range: 167.317535\r\n" ++
+        "pos: -50.230278,5.929730,-66.137024, color: 0.830000,0.300000,0.200000, range: 15.391061\r\n" ++
+        "ambient=0.254902,0.254902,0.254902\r\ndirectionalColor=0.470588,0.470588,0.470588\r\n" ++
+        "shadowLight=2294.429199,-1978.424927,6218.500000\r\nshadowIntensity=0.500000\r\n";
+    var l = try parseLights(gpa, src);
+    defer l.deinit(gpa);
+    const out = try encodeLights(gpa, l);
+    defer gpa.free(out);
+    try std.testing.expectEqualStrings(src, out);
+}
+
 test parseWalkMap {
     const gpa = std.testing.allocator;
     const bytes = [_]u8{ 2, 0, 0, 0, 1, 0, 0, 0, 1, 0xee, 0xff, 0, 0, 0 };
@@ -482,10 +573,32 @@ test "walk map with overflowing size is an error" {
     try std.testing.expectError(error.Truncated, parseWalkMap(std.testing.allocator, &bytes));
 }
 
+test encodeWalkMap {
+    const gpa = std.testing.allocator;
+    var cells = [_]WalkMap.Cell{ .{ .kind = 1, .height = -5 }, .{ .kind = 4, .height = 300 } };
+    const bytes = try encodeWalkMap(gpa, .{ .width = 2, .height = 1, .cells = &cells });
+    defer gpa.free(bytes);
+    var m = try parseWalkMap(gpa, bytes);
+    defer m.deinit(gpa);
+    try std.testing.expectEqual(-5, m.cells[0].height);
+    try std.testing.expectEqual(4, m.cells[1].kind);
+}
+
 test "tile <-> world" {
     const cm: CombatMap = .{ .center = .{ -100, 50, -10 }, .rotation = 0, .cell_size = .{ 40, 40 }, .width = 9, .height = 9, .blocked = &.{}, .heights = &.{} };
     for ([_]u32{ 1, 2 }) |s| {
         const t: [2]i32 = .{ 3, 5 };
         try std.testing.expectEqual(t, cm.tileOf(cm.tileCenter(t, s), s));
     }
+}
+
+test encodeCombatMap {
+    const gpa = std.testing.allocator;
+    const src = "centerX=-806.784790\r\ncenterY=-552.054810\r\ncenterZ=-79.000000\r\nrotation=0.040000\r\nxSize=59.500000\r\nySize=59.500000\r\n\r\n" ++
+        "width=3\r\nheight=2\r\n\r\nOO.\r\n..O\r\n\r\nheightCnt=2\r\n7 13 86\r\n8 13 -5\r\n";
+    var m = try parseCombatMap(gpa, src);
+    defer m.deinit(gpa);
+    const out = try encodeCombatMap(gpa, m);
+    defer gpa.free(out);
+    try std.testing.expectEqualStrings(src, out);
 }

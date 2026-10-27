@@ -2,11 +2,13 @@
 
 const std = @import("std");
 const Io = std.Io;
+const og = @import("opengorky");
 
 /// `<game>/dat`; the game dir is closed right away.
 pub fn openDat(io: Io, game_dir: []const u8, opts: Io.Dir.OpenOptions) !Io.Dir {
     var game = try Io.Dir.cwd().openDir(io, game_dir, .{});
     defer game.close(io);
+    og.formats.adjust.load(io, game);
     return game.openDir(io, "dat", opts);
 }
 

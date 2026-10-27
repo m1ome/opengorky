@@ -6,7 +6,6 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const archive = @import("../formats.zig").archive;
 const decode = @import("decode.zig");
-const mixer = @import("mixer.zig");
 
 /// Parameters from adjust.kdt (defaults from the game file).
 pub const Params = struct {

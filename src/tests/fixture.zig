@@ -30,7 +30,7 @@ fn archiveBytes(gpa: std.mem.Allocator, files: []const File) ![]u8 {
     return buf;
 }
 
-fn writeArchive(dir: Io.Dir, path: []const u8, files: []const File) !void {
+pub fn writeArchive(dir: Io.Dir, path: []const u8, files: []const File) !void {
     const io = std.testing.io;
     if (std.fs.path.dirname(path)) |d| try dir.createDirPath(io, d);
     const bytes = try archiveBytes(std.testing.allocator, files);
@@ -43,8 +43,11 @@ pub fn writeCommon(dir: Io.Dir) !void {
     try writeArchive(dir, "common/other.dat", &.{
         .{ "gamestart\\Sullivan.hro", "int hp; int nameID; int avoidEnumerate;\nfunction init() { hp = 100; };" },
         .{ "classes\\combatlevel.s", "string backLevel;" },
+        .{ "classes\\vest.s", "int nameID; int place; string Owner;\nfunction init() { nameID = 77; };" },
         // A scene that moves to 01_b (LOADLEVEL) and continues there.
         .{ "scriptlets\\move.scr", "LOADLEVEL(\"01_b\")\nFADE_OUT()\n" },
+        // Mod-only scene commands (no shipped scene uses them).
+        .{ "scriptlets\\modcmds.scr", "IDLE_OFF(\"Sullivan\")\nZOOM(250,10)\nGUI_GAMEOVER()\nDELAY(5)\n" },
     });
     try writeArchive(dir, "common/lang.dat", &.{});
 }

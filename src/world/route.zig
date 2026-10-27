@@ -14,6 +14,16 @@ const Object = @import("../script.zig").object.Object;
 const world_mod = @import("../state.zig").world;
 const World = world_mod.World;
 
+/// The level's `.ap` links (start sx, sy → end dx, dy) in file order, for the route search.
+pub fn levelPortals(self: *const World, gpa: std.mem.Allocator) ![]nav.Portal {
+    const out = try gpa.alloc(nav.Portal, self.paths.len);
+    for (self.paths, out) |pa, *p| p.* = .{
+        .a = .{ value.floatToInt(pa.link[0]), value.floatToInt(pa.link[1]) },
+        .b = .{ value.floatToInt(pa.link[2]), value.floatToInt(pa.link[3]) },
+    };
+    return out;
+}
+
 /// Walk to a background point over the walk grid (straight line without one).
 pub fn walkTo(self: *World, o: *Object, target_bg: [2]f32) !void {
     const a = world_mod.actorOf(o);
@@ -23,13 +33,9 @@ pub fn walkTo(self: *World, o: *Object, target_bg: [2]f32) !void {
     if (floor.floorMap(self, a.map)) |m| {
         // Transitions use the `.ap` end marks on this floor (0x4ac200): start (bit 1)
         // leads to the end, end (bit 2) back to the start.
-        var portals: std.ArrayList(nav.Portal) = .empty;
-        defer portals.deinit(self.gpa);
-        for (self.paths) |pa| try portals.append(self.gpa, .{
-            .a = .{ value.floatToInt(pa.link[0]), value.floatToInt(pa.link[1]) },
-            .b = .{ value.floatToInt(pa.link[2]), value.floatToInt(pa.link[3]) },
-        });
-        const route = (try nav.findRoute(self.gpa, &self.nav_cells, m, portals.items, .{ here.x, here.y }, target_bg)) orelse {
+        const portals = try levelPortals(self, self.gpa);
+        defer self.gpa.free(portals);
+        const route = (try nav.findRoute(self.gpa, &self.nav_cells, m, portals, .{ here.x, here.y }, target_bg)) orelse {
             // No route: stand rather than step in place.
             a.stopWalking(self.crt());
             return;

@@ -52,7 +52,7 @@ pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir, world: *Wor
         for (view.walk_textures) |t| if (t) |tex| c.SDL_DestroyTexture(tex);
     }
     if (lvl.background) |bg| view.background = try level_file.loadEntry(io, gpa, r, sprites, bg);
-    if (models != null) try actor_layer.makeLayer(&view, 1);
+    if (models != null) try actor_layer.makeLayer(&view, 1, 640);
     if (snd) |s| {
         view.scene = Scene.init(gpa, s.bank, s.mixer, s.params);
         view.scene.?.startMusic(og.game.levelMusic(world)) catch |err| std.log.warn("music: {t}", .{err});
@@ -64,11 +64,11 @@ pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir, world: *Wor
 }
 
 /// Actor layer detail (pixels per screen pixel); the layer is recreated.
-pub fn setDetail(self: *LevelView, ss: u32) void {
-    if (self.layer == null or ss == self.ss) return;
-    actor_layer.makeLayer(self, ss) catch |err| {
+pub fn setDetail(self: *LevelView, ss: u32, lw: u32) void {
+    if (self.layer == null or (ss == self.ss and lw == self.layer_w)) return;
+    actor_layer.makeLayer(self, ss, lw) catch |err| {
         std.log.warn("actor layer ×{d}: {t}", .{ ss, err });
-        actor_layer.makeLayer(self, 1) catch {};
+        actor_layer.makeLayer(self, 1, 640) catch {};
     };
 }
 
@@ -111,7 +111,7 @@ pub fn draw(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mouse: [2]f32)
 /// screen top — from y = 50 downward, otherwise upward.
 pub fn drawPopup(self: *LevelView, r: *c.SDL_Renderer, g: *Gui, pp: *const og.popup.Popup, scroll: [2]f32) !void {
     const lk = pp.look() orelse return;
-    const q = self.world.cam.project(level_file.addZ(pp.pos, og.popup.teff_height * self.world.actorScale()));
+    const q = self.world.cam.project(level_file.addZ(pp.pos, og.popup.teffHeight() * self.world.actorScale()));
     const sx = q.x - scroll[0];
     var sy = q.y - scroll[1];
     sy = if (sy < 80) 50 + pp.dy else sy - pp.dy;

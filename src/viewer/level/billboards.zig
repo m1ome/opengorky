@@ -8,8 +8,7 @@ const LevelView = @import("../level.zig").LevelView;
 const place = @import("place.zig");
 const World = og.state.world.World;
 
-/// One batch billboard: `.dsc` effect `name`, half size `half`, colour `rgb`, alpha.
-pub const Billboard = struct { name: []const u8, frame: u32, pos: [3]f32, half: f32, alpha: f32 = 1, rgb: [3]f32 = .{ 1, 1, 1 } };
+pub const Billboard = og.effects.batch.Billboard;
 
 /// All batch billboards, in the screen pass order.
 pub fn all(self: *LevelView, sink: anytype) !void {
@@ -51,7 +50,8 @@ pub fn incubusGlow(self: *LevelView, sink: anytype) !void {
     const as = w.actorScale();
     for (w.rt.objects.items) |o| {
         const n = World.nativeOf(o);
-        if (n.kind != .actor or !o.enabled or n.deleted or !n.actor.placed) continue;
+        // A faded corpse is removed (+0x60 at 0x426950), so its glow goes with it.
+        if (n.kind != .actor or !o.enabled or n.deleted or n.actor.gone or !n.actor.placed) continue;
         if (og.fields.nameId(o) != 138) continue;
         const m = ms.get(og.fields.meshFile(o)) orelse continue;
         const pl = place.placement(self, o, m) orelse continue;
@@ -72,13 +72,9 @@ pub fn morphSparks(self: *LevelView, sink: anytype) !void {
         try sink.put(.{ .name = "poswiata", .frame = 0, .pos = mo.particlePos(i), .half = as * 80, .rgb = .{ 0.5, 0.5, 0.8 } });
 }
 
-/// Bitmaps and flashes (0x4cb600, draw 0x4cb8b0).
+/// Bitmaps and flashes (og.effects.batch).
 pub fn bitmaps(self: *LevelView, sink: anytype) !void {
-    const as = self.world.actorScale();
-    for (self.world.effects.bitmaps.items) |bm| {
-        if (bm.delay > 0) continue;
-        try sink.put(.{ .name = bm.effect, .frame = if (bm.flash_rate > 0) 0 else bm.frame(), .pos = bm.pos, .half = as * bm.drawSize(), .alpha = bm.alpha, .rgb = bm.rgb });
-    }
+    try og.effects.batch.bitmaps(self.world.effects.bitmaps.items, self.world.actorScale(), sink);
 }
 
 /// Blood and flare drops (0x4cce20): a drop in the world is origin + p·aS·drop_unit
@@ -88,7 +84,8 @@ pub fn blood(self: *LevelView, sink: anytype) !void {
     const pt = og.effects.particles;
     const as = self.world.actorScale();
     const k = as * pt.drop_unit;
-    const rt: f32 = pt.particle_rest_time;
+    const rt: f32 = @floatFromInt(pt.restTime());
+    const bs: f32 = @floatFromInt(pt.blendStart());
     for (self.world.effects.blood.items) |bl| for (0..bl.n) |i| {
         const d = bl.drops[i];
         if (d.dead) continue;
@@ -98,44 +95,17 @@ pub fn blood(self: *LevelView, sink: anytype) !void {
             .frame = if (d.blend != 0) 3 else @intCast((i & 1) + 1),
             .pos = .{ bl.origin[0] + d.pos[0] * k, bl.origin[1] + d.pos[1] * k, bl.origin[2] + d.pos[2] * k },
             .half = as * sz,
-            .alpha = if (d.blend > pt.particle_blend_start) (rt - og.num.toF32(d.blend)) / (rt - pt.particle_blend_start) else 1,
+            .alpha = if (og.num.toF32(d.blend) > bs) (rt - og.num.toF32(d.blend)) / (rt - bs) else 1,
         });
     };
 }
 
-/// Trails (0x4cd4a0): separate objects that outlive the projectile; size and
-/// brightness fall toward the tail.
+/// Trails (og.effects.batch).
 pub fn trails(self: *LevelView, sink: anytype) !void {
-    const as = self.world.actorScale();
-    for (self.world.effects.trails.items) |t| {
-        var s: f32 = 1;
-        var a: f32 = 1;
-        var idx: usize = t.head;
-        for (0..t.count) |k| {
-            if (s <= 0.01 or a <= 0.01) break;
-            if (k >= t.eaten) try sink.put(.{ .name = t.effect, .frame = @intCast(k), .pos = t.pts[idx], .half = as * s * t.size, .alpha = a, .rgb = t.rgb });
-            s -= t.size_fade;
-            a *= t.fade;
-            idx = (idx + 1) % og.effects.projectile.Trail.ring;
-        }
-    }
+    try og.effects.batch.trails(self.world.effects.trails.items, self.world.actorScale(), sink);
 }
 
-/// Projectile planes (0x49bab0): a projectile without a body mesh, bullet or rocket.
+/// Projectile planes (og.effects.batch).
 pub fn projectilePlanes(self: *LevelView, sink: anytype) !void {
-    const as = self.world.actorScale();
-    for (self.world.effects.projectiles.items) |pr| {
-        if (pr.done or pr.bullet or pr.rocket or pr.effect.len == 0) continue;
-        if (pr.ball) |b| {
-            // Ball (0x4a6280): two "kula" frames cross-fading by wave a, sizes ±40·b,
-            // then "poswiata" 400 tinted (0.2 + 0.08a, 0.2, 0.4); scale / attack_ball_ms.
-            const s = pr.k * pr.mesh_scale / og.effects.projectile.attack_ball_ms;
-            const fade = 2.5 * b.a + 0.5;
-            try sink.put(.{ .name = "kula", .frame = b.f1, .pos = pr.pos, .half = as * (130 * s + 40 * b.b), .alpha = fade });
-            try sink.put(.{ .name = "kula", .frame = b.f2, .pos = pr.pos, .half = as * (130 * s + 8 - 40 * b.b), .alpha = 1 - fade });
-            try sink.put(.{ .name = "poswiata", .frame = 0, .pos = pr.pos, .half = as * 400 * s, .rgb = .{ 0.2 + 0.08 * b.a, 0.2, 0.4 } });
-            continue;
-        }
-        try sink.put(.{ .name = pr.effect, .frame = pr.ticks, .pos = pr.pos, .half = as * pr.size * pr.k });
-    }
+    try og.effects.batch.projectilePlanes(self.world.effects.projectiles.items, self.world.actorScale(), sink);
 }
