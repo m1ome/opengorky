@@ -126,12 +126,6 @@ test "parse and measure" {
 pub fn merge(gpa: Allocator, base: []const u8, extra: []const u8) (Error || Allocator.Error)![]u8 {
     const base_font = try parse(base);
     const extra_font = try parse(extra);
-    const fg: u8 = blk: {
-        for (base_font.glyphs) |g| if (g) |glyph| {
-            for (glyph.pixels) |v| if (v != base_font.bg) break :blk v;
-        };
-        break :blk if (base_font.bg == 0) 1 else 0;
-    };
     var data: std.ArrayList(u8) = .empty;
     defer data.deinit(gpa);
     var offs: [256]u32 = @splat(0xffff_ffff);
@@ -152,9 +146,15 @@ pub fn merge(gpa: Allocator, base: []const u8, extra: []const u8) (Error || Allo
         // 03_small uses background 3 / letter 4, but its Polish set uses
         // background 0 / letter 3. Copying those indices makes the letter
         // transparent and its rectangle opaque when parsed as one font.
+        // Swap the two background indices: the old background becomes transparent,
+        // ink colliding with the new background stays visible, other indices stay intact.
         if (source.bg != base_font.bg) {
             for (data.items[o.* + 16 ..][0 .. n - 16]) |*v| {
-                v.* = if (v.* == source.bg) base_font.bg else fg;
+                if (v.* == source.bg) {
+                    v.* = base_font.bg;
+                } else if (v.* == base_font.bg) {
+                    v.* = source.bg;
+                }
             }
         }
         while (data.items.len % 4 != 0) try data.append(gpa, 0);
@@ -233,6 +233,11 @@ test "merge preserves rendered language glyph masks" {
         try std.testing.expectEqual(bg, f.bg);
         try std.testing.expectEqualSlices(u8, &main_px, f.glyphs['A'].?.pixels);
         if (bg == extra_bg) try std.testing.expectEqualSlices(u8, &extra_px, f.glyphs[0x9c].?.pixels);
+        // Ink indices unrelated to either background must not be collapsed.
+        if (extra_fg == 5) {
+            try std.testing.expectEqual(5, f.glyphs[0x9c].?.pixels[1]);
+            try std.testing.expectEqual(6, f.glyphs[0x9c].?.pixels[4]);
+        }
         try std.testing.expectEqual(8, f.measure("A\x9c\xdf\xff"));
         try std.testing.expectEqual(null, f.glyphs['B']);
         var img = try Image.init(gpa, 10, 3);
