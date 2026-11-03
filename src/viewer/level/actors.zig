@@ -409,7 +409,7 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
     perf.add(.models, pt);
     pt = perf.now();
     if (self.shadows) if (self.level.lights) |lt| {
-        layer.compositeShadow(self.world.cam, lt.shadow_intensity, depth.shadowBias(self, src));
+        layer.compositeShadowPooled(self.world.cam, lt.shadow_intensity, depth.shadowBias(self, src), layer_mod.rasterPool(self.io));
         any = true;
     };
     perf.add(.shadow_mix, pt);

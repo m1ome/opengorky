@@ -169,11 +169,12 @@ pub const Canvas = struct {
             p.workers = @intCast(std.math.clamp(threads, 1, max_threads) - 1);
         }
 
-        fn run(p: *Pool, job: *Job) void {
-            var g: std.Io.Group = .init;
-            for (0..p.workers) |_| g.async(p.io, Job.run, .{job});
+        /// Runs a shared work queue and joins its workers.
+        pub fn run(p: *Pool, job: anytype) void {
+            var group: std.Io.Group = .init;
+            for (0..p.workers) |_| group.async(p.io, @TypeOf(job.*).run, .{job});
             job.run();
-            g.await(p.io) catch {};
+            group.await(p.io) catch {};
         }
     };
 
@@ -188,7 +189,7 @@ pub const Canvas = struct {
         chunks: usize,
         next: std.atomic.Value(usize) = .init(0),
 
-        fn run(job: *Job) void {
+        pub fn run(job: *Job) void {
             const h = job.canvas.img.height;
             while (true) {
                 const i = job.next.fetchAdd(1, .monotonic);

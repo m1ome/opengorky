@@ -69,6 +69,9 @@ pub const Layer = struct {
     light: Lighting = .{},
     /// 512×512 shadow mask over the whole layer (0x56f2e8, buffer 0x40d570): 1 — shadowed.
     shadow: []u8,
+    /// Sampling coordinates are fixed until this layer is resized.
+    shadow_x: []ShadowSample,
+    shadow_y: []ShadowSample,
     /// 8×8 layer tiles (0x54b200): floor height of the first actor whose shadow touched
     /// them (its floor plane is the depth of the tile quad's four corners, 0x419e44).
     shadow_tiles: [shadow_grid * shadow_grid]?f32 = @splat(null),
@@ -104,6 +107,22 @@ pub const Layer = struct {
     /// Side of the layer tile grid for the shadow plane (8×8, 0x54b200).
     const shadow_grid = 8;
 
+    const ShadowSample = struct { pos: f32, frac: f32, lo: usize, hi: usize };
+
+    fn shadowAxis(gpa: Allocator, size: u32, ss: u32) ![]ShadowSample {
+        const samples = try gpa.alloc(ShadowSample, size);
+        const extent = num.toF32(size / ss);
+        const scale = num.toF32(ss);
+        const tn = mask_size / 2;
+        for (samples, 0..) |*sample, i| {
+            const pos = (num.toF32(i) + 0.5) / scale;
+            const v = (1 + pos * 2 * 255 / extent) / 2 - 0.5;
+            const index = @floor(v);
+            sample.* = .{ .pos = pos, .frac = v - index, .lo = @intFromFloat(std.math.clamp(index, 0, tn - 1)), .hi = @intFromFloat(std.math.clamp(index + 1, 0, tn - 1)) };
+        }
+        return samples;
+    }
+
     /// Layer of `w×h` screen pixels with a canvas `ss` times finer.
     pub fn initScaled(gpa: Allocator, w: u32, h: u32, ss: u32) !Layer {
         var canvas = try raster.Canvas.init(gpa, w * ss, h * ss, .{ 0, 0, 0, 0 });
@@ -117,17 +136,23 @@ pub const Layer = struct {
         @memset(screen.pixels, 0);
         const shadow = try gpa.alloc(u8, mask_size * mask_size);
         errdefer gpa.free(shadow);
+        const shadow_x = try shadowAxis(gpa, w * ss, ss);
+        errdefer gpa.free(shadow_x);
+        const shadow_y = try shadowAxis(gpa, h * ss, ss);
+        errdefer gpa.free(shadow_y);
         const base: []f32 = if (ss > 1) try gpa.alloc(f32, @as(usize, w) * h) else &.{};
         errdefer if (ss > 1) gpa.free(base);
         const cache = try gpa.alloc(f32, @as(usize, w) * h);
         if (ss > 1) canvas.base = .{ .depth = base, .w = w, .ss = ss };
-        return .{ .canvas = canvas, .glow = glow, .screen = screen, .shadow = shadow, .ss = ss, .base_depth = base, .base_cache = cache };
+        return .{ .canvas = canvas, .glow = glow, .screen = screen, .shadow = shadow, .shadow_x = shadow_x, .shadow_y = shadow_y, .ss = ss, .base_depth = base, .base_cache = cache };
     }
 
     pub fn deinit(self: *Layer, gpa: Allocator) void {
         if (self.base_depth.len > 0) gpa.free(self.base_depth);
         gpa.free(self.base_cache);
         gpa.free(self.shadow);
+        gpa.free(self.shadow_x);
+        gpa.free(self.shadow_y);
         self.glow.deinit(gpa);
         self.screen.deinit(gpa);
         self.canvas.deinit(gpa);
@@ -226,71 +251,99 @@ pub const Layer = struct {
     /// buffer units. Empty layer pixels (background) get black with
     /// alpha I·coverage.
     pub fn compositeShadow(self: *Layer, cam: camera.Camera, intensity: f32, bias: f32) void {
-        const ss = self.ss;
-        const cw = self.canvas.img.width;
-        // Tiles are in 640×480 screen pixels; coverage (bilinear sampling of the
-        // 256×256 texture), the floor plane and the depth test are evaluated at the
-        // center of each fine canvas pixel, like the exe's quad drawn at this
-        // resolution. With K = 1 this is the same as screen pixels.
-        const w = cw / ss;
-        const h = self.canvas.img.height / ss;
-        const px = self.canvas.img.pixels;
+        self.compositeShadowPooled(cam, intensity, bias, null);
+    }
+
+    /// Parallel tiles write disjoint pixels; merge statistics after joining.
+    pub fn compositeShadowPooled(self: *Layer, cam: camera.Camera, intensity: f32, bias: f32, pool: ?*raster.Canvas.Pool) void {
+        var job: ShadowJob = .{ .layer = self, .cam = cam, .intensity = intensity, .bias = bias };
         const n = mask_size;
         const tn = n / 2;
-        const g = shadow_grid;
-        const tw = @max(1, w / g);
-        const th = @max(1, h / g);
-        var cov: [tn * tn]u8 = undefined;
         for (0..tn) |ty| for (0..tn) |tx| {
             const m = self.shadow[2 * ty * n + 2 * tx ..];
-            cov[ty * tn + tx] = m[0] + m[1] + m[n] + m[n + 1];
+            job.cov[ty * tn + tx] = m[0] + m[1] + m[n] + m[n + 1];
         };
-        const fw: f32 = @floatFromInt(w);
-        const fh: f32 = @floatFromInt(h);
-        const ssf: f32 = @floatFromInt(ss);
-        // Darkened screen pixels go into the canvas "drawn" area per tile (shadows of
-        // different actors do not merge into one bounding box).
+        const workers = if (self.ss > 1) pool else null;
+        if (workers) |p| p.run(&job) else job.run();
         self.shadow_stat = .{};
-        var lo: [g * g][2]usize = @splat(.{ w, h });
-        var hi: [g * g][2]usize = @splat(.{ 0, 0 });
-        defer for (lo, hi) |l, hh| if (l[0] < hh[0]) {
-            self.canvas.beginRegion();
-            self.canvas.addDirty(.{ .x0 = @intCast(l[0] * ss), .y0 = @intCast(l[1] * ss), .x1 = @intCast(hh[0] * ss), .y1 = @intCast(hh[1] * ss) });
+        for (job.results) |r| {
+            self.shadow_stat.lit += r.lit;
+            self.shadow_stat.cut_bg += r.cut;
+            if (r.lo[0] < r.hi[0]) {
+                self.canvas.beginRegion();
+                self.canvas.addDirty(.{ .x0 = @intCast(r.lo[0] / self.ss * self.ss), .y0 = @intCast(r.lo[1] / self.ss * self.ss), .x1 = @intCast((r.hi[0] + self.ss - 1) / self.ss * self.ss), .y1 = @intCast((r.hi[1] + self.ss - 1) / self.ss * self.ss) });
+            }
+        }
+    }
+
+    const ShadowJob = struct {
+        layer: *Layer,
+        cam: camera.Camera,
+        intensity: f32,
+        bias: f32,
+        cov: [mask_size / 2 * (mask_size / 2)]u8 = undefined,
+        next: std.atomic.Value(usize) = .init(0),
+        results: [shadow_grid * shadow_grid]Result = @splat(.{}),
+
+        const Result = struct {
+            lo: [2]usize = @splat(std.math.maxInt(usize)),
+            hi: [2]usize = @splat(0),
+            lit: u32 = 0,
+            cut: u32 = 0,
         };
-        // Only tiles the shadow touched (the last one reaches the layer edge).
-        for (0..g) |tr| for (tr * th..if (tr == g - 1) h else (tr + 1) * th) |y| {
-            if (std.mem.allEqual(?f32, self.shadow_tiles[tr * g ..][0..g], null)) break;
-            for (0..g) |tc| for (tc * tw..if (tc == g - 1) w else (tc + 1) * tw) |x| {
-                const zg = self.shadow_tiles[tr * g + tc] orelse break;
-                var any = false;
-                for (y * ss..y * ss + ss) |hy| {
-                    // Canvas pixel center in screen pixels.
-                    const ey = (num.toF32(hy) + 0.5) / ssf;
-                    // Texture coordinate: screen → mask (bx = 1 + x·510/w), texel = bx/2.
-                    const vy = (1 + ey * 2 * 255 / fh) / 2 - 0.5;
-                    const iy = @floor(vy);
-                    const fy = vy - iy;
-                    const y0: usize = @intFromFloat(std.math.clamp(iy, 0, tn - 1));
-                    const y1: usize = @intFromFloat(std.math.clamp(iy + 1, 0, tn - 1));
-                    for (x * ss..x * ss + ss) |hx| {
-                        const ex = (num.toF32(hx) + 0.5) / ssf;
-                        const vx = (1 + ex * 2 * 255 / fw) / 2 - 0.5;
-                        const ix = @floor(vx);
-                        const fx = vx - ix;
-                        const x0: usize = @intFromFloat(std.math.clamp(ix, 0, tn - 1));
-                        const x1: usize = @intFromFloat(std.math.clamp(ix + 1, 0, tn - 1));
-                        const c00: f32 = @floatFromInt(cov[y0 * tn + x0]);
-                        const c10: f32 = @floatFromInt(cov[y0 * tn + x1]);
-                        const c01: f32 = @floatFromInt(cov[y1 * tn + x0]);
-                        const c11: f32 = @floatFromInt(cov[y1 * tn + x1]);
+
+        pub fn run(job: *ShadowJob) void {
+            const self = job.layer;
+            const canvas = self.canvas;
+            const origin = self.origin;
+            const xs = self.shadow_x;
+            const ys = self.shadow_y;
+            const ss = self.ss;
+            const cw = canvas.img.width;
+            const w = cw / ss;
+            const h = canvas.img.height / ss;
+            const px = canvas.img.pixels;
+            const tn = mask_size / 2;
+            const g = shadow_grid;
+            const tw = @max(1, w / g);
+            const th = @max(1, h / g);
+            const cam = job.cam;
+            const intensity = job.intensity;
+            const bias = job.bias;
+            while (true) {
+                const ti = job.next.fetchAdd(1, .monotonic);
+                if (ti >= g * g) return;
+                const zg = self.shadow_tiles[ti] orelse continue;
+                const tr = ti / g;
+                const tc = ti % g;
+                var result: Result = .{};
+                const x_end = if (tc == g - 1) w else (tc + 1) * tw;
+                const y_end = if (tr == g - 1) h else (tr + 1) * th;
+                for (tr * th * ss..y_end * ss) |hy| {
+                    const sample_y = ys[hy];
+                    const ey = sample_y.pos;
+                    const fy = sample_y.frac;
+                    const y0 = sample_y.lo;
+                    const y1 = sample_y.hi;
+                    for (tc * tw * ss..x_end * ss) |hx| {
+                        const sample_x = xs[hx];
+                        const ex = sample_x.pos;
+                        const fx = sample_x.frac;
+                        const x0 = sample_x.lo;
+                        const x1 = sample_x.hi;
+                        const c00: f32 = @floatFromInt(job.cov[y0 * tn + x0]);
+                        const c10: f32 = @floatFromInt(job.cov[y0 * tn + x1]);
+                        const c01: f32 = @floatFromInt(job.cov[y1 * tn + x0]);
+                        const c11: f32 = @floatFromInt(job.cov[y1 * tn + x1]);
                         const sum = (c00 * (1 - fx) + c10 * fx) * (1 - fy) + (c01 * (1 - fx) + c11 * fx) * fy;
                         if (sum <= 0) continue;
-                        any = true;
-                        self.shadow_stat.lit += 1;
-                        const plane = -cam.planeDepth(ex + self.origin[0], ey + self.origin[1], zg) - bias;
+                        result.lit += 1;
+                        result.lo = .{ @min(result.lo[0], hx), @min(result.lo[1], hy) };
+                        result.hi = .{ @max(result.hi[0], hx + 1), @max(result.hi[1], hy + 1) };
+                        const plane = -cam.planeDepth(ex + origin[0], ey + origin[1], zg) - bias;
                         const i = (hy * cw + hx) * 4;
-                        if (plane > self.canvas.depthAt(hy * cw + hx, hx, hy)) {
-                            if (ss > 1 and std.math.isNan(self.canvas.depth[hy * cw + hx])) self.shadow_stat.cut_bg += 1;
+                        if (plane > canvas.depthAt(hy * cw + hx, hx, hy)) {
+                            if (ss > 1 and std.math.isNan(canvas.depth[hy * cw + hx])) result.cut += 1;
                             if (self.shadow_debug) px[i..][0..4].* = .{ 255, 0, 0, 255 };
                             continue;
                         }
@@ -302,13 +355,11 @@ pub const Layer = struct {
                         }
                     }
                 }
-                if (!any) continue;
-                const ti = tr * g + tc;
-                lo[ti] = .{ @min(lo[ti][0], x), @min(lo[ti][1], y) };
-                hi[ti] = .{ @max(hi[ti][0], x + 1), @max(hi[ti][1], y + 1) };
-            };
-        };
-    }
+                // One write per tile avoids false sharing in the pixel loop.
+                job.results[ti] = result;
+            }
+        }
+    };
 
     /// Clears the layer and fills the depth buffer with the background surface: pixel
     /// (x, y) with height H lies at depth y + 2H/k (see camera.worldToScreen).
@@ -695,4 +746,53 @@ test "shadow is solid with soft edges and skips what is above the floor plane" {
         if (al > 0 and al < 127) soft = true;
     }
     try std.testing.expect(soft);
+}
+
+test "pooled shadow composition matches serial pixels, depth, statistics and dirty regions" {
+    const gpa = std.testing.allocator;
+    var pool: raster.Canvas.Pool = .{ .io = std.testing.io };
+    const persp: camera.Camera = .{ .persp = camera.Persp.initBank(.{ 0, 10, -15 }, .{ 0, 0, 0 }, 50, 0.0057, 0, 65, 49, 0).? };
+    // Non-multiple dimensions exercise the final tile row and column. Sparse
+    // tiles, alpha, foreground depth and both cameras cover the independent jobs.
+    for ([_]usize{ 1, 2, 4, 16 }) |threads| {
+        pool.init(threads);
+        inline for (.{ 1, 2, 3, 4 }) |ss| {
+            for ([_]camera.Camera{ .ortho, persp }) |cam| {
+                var serial = try Layer.initScaled(gpa, 65, 49, ss);
+                defer serial.deinit(gpa);
+                var parallel = try Layer.initScaled(gpa, 65, 49, ss);
+                defer parallel.deinit(gpa);
+                for ([_]*Layer{ &serial, &parallel }) |l| {
+                    l.begin(.{ 0.375, -0.25 }, .none);
+                    for (l.shadow, 0..) |*v, i| v.* = if ((i / 512 + i % 512) % 23 < 9) 1 else 0;
+                    for (&l.shadow_tiles, 0..) |*v, i| v.* = if (i % 3 == 0) null else num.toF32(i % 5);
+                    for (l.base_depth, 0..) |*v, i| v.* = if (i % 5 == 0) -10000 else 10000;
+                    for (l.canvas.depth, 0..) |*v, i| v.* = if (i % 7 == 0) -10000 else if (ss > 1) std.math.nan(f32) else 10000;
+                    for (l.canvas.img.pixels, 0..) |*v, i| v.* = @intCast((i * 17) % 256);
+                    l.shadow_debug = ss == 2;
+                }
+                serial.compositeShadow(cam, 0.65, 2.8);
+                parallel.compositeShadowPooled(cam, 0.65, 2.8, &pool);
+                try std.testing.expectEqualSlices(u8, serial.canvas.img.pixels, parallel.canvas.img.pixels);
+                try std.testing.expectEqualSlices(u8, std.mem.sliceAsBytes(serial.canvas.depth), std.mem.sliceAsBytes(parallel.canvas.depth));
+                try std.testing.expectEqualDeep(serial.shadow_stat, parallel.shadow_stat);
+                try std.testing.expect(serial.shadow_stat.lit > 0);
+                if (ss > 1) try std.testing.expect(serial.shadow_stat.cut_bg > 0);
+                try std.testing.expectEqualDeep(serial.canvas.dirty, parallel.canvas.dirty);
+                try std.testing.expectEqualSlices(raster.Canvas.Rect, serial.canvas.dirtyRegions(), parallel.canvas.dirtyRegions());
+            }
+        }
+    }
+}
+
+test "layer initialization frees buffers after allocation failures" {
+    const Check = struct {
+        fn init(gpa: Allocator) !void {
+            inline for (.{ 1, 3 }) |ss| {
+                var layer = try Layer.initScaled(gpa, 65, 49, ss);
+                layer.deinit(gpa);
+            }
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.init, .{});
 }
