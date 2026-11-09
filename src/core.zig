@@ -32,4 +32,5 @@ test {
     _ = classic;
     _ = ui;
     _ = schema;
+    _ = ui_text;
 }

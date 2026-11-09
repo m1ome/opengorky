@@ -123,6 +123,7 @@ imports "$OG_ONLY" loaders/world.zig loaders/classic.zig loaders/classic/entitie
 # no longer does (drop it from the list).
 VIEWER_FORMATS="
 viewer/app/launcher.zig   launch: config pictures, the language
+viewer/app/packages.zig   launch: mod packages' manifests
 viewer/app/run.zig        launch: manifest, archives
 viewer/app/viewer.zig     archive browser, screenshots
 viewer/battle/gui.zig     drawing: fonts, string.tab

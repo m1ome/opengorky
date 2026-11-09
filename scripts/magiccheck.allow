@@ -7,11 +7,12 @@
 # file cycle (scripts/deps.py).
 rules/ai.zig * the exe's AI profile table 0x4bcbb0 (rules AiProfile built-ins)
 rules/attacks.zig * the exe's attack branches by classic_id (rules MonsterAttack, HeroAttack, WdelayHero built-ins)
+rules/adjust_owners.zig * the exe's ini key names beside each setting's OG field (Classic conversion)
 rules/campaign.zig * the exe's new game 0x413386 (rules Campaign built-in)
+rules/fighter_classes.zig * the exe's fighter classes by classType 0x4bc6c0 (rules fighterClassId built-ins)
 rules/party.zig * the exe's idle chatter and hidden weapons by hero (rules IdleChatter, HiddenWeapons built-ins)
 rules/resist.zig * the exe's resistance table by classic_id (rules Resist built-ins)
 rules/ui.zig * the exe's kill and skill icons by classic_id (rules KillIcon, SkillIcon built-ins)
 # Not the engine's behaviour.
 game/scene_check.zig * the scene checker (gorky-tool): joiner heroes and their levels, a dev tool
 viewer/battle/gui.zig "Victory" the banner's fallback text when string.tab has no 501
-viewer/menu.zig "01_credits_" the credits fonts' file names (asset names)

@@ -738,4 +738,5 @@ test {
     _ = rows;
     _ = adjust;
     _ = adjust_owners;
+    _ = d_fighter_classes;
 }
