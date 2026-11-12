@@ -136,7 +136,7 @@ pub const InventoryView = struct {
     text_tex: ?*c.SDL_Texture = null,
 
     pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir) !InventoryView {
-        var as: og.loaders.assets.Stack = try .classic(io, gpa, dat);
+        var as: og.loaders.assets.Stack = try og.loaders.assetStack(io, gpa, dat);
         errdefer as.deinit();
         _ = try as.archiveOf("common/sprite.dat");
         _ = try as.archiveOf("common/other.dat");

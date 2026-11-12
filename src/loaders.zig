@@ -101,6 +101,12 @@ fn openPackage(io: Io, path: []const u8) !Game {
     return .{ .root = root, .dat = dat, .manifest = m };
 }
 
+/// The assets a client reads: an open OpenGorky project's own (src/assets/, its
+/// package) over the installed game's archives under `dat`; the game's alone otherwise.
+pub fn assetStack(io: Io, gpa: Allocator, dat: Io.Dir) !assets.Stack {
+    return .og(io, gpa, ogs.ownAssets(), dat);
+}
+
 /// The core every client starts with after openGame, from the loader that opened it: an
 /// OpenGorky project's archetypes and texts (ogs.loadCore), else the original's
 /// classic_id texts and its classes and heroes as the core's records (classic.loadCore).
@@ -139,7 +145,7 @@ var og_table: @import("formats.zig").strtab.Table = .{};
 /// (the viewer), null when missing (one page per line).
 pub fn loadDialogFont(io: Io, dat: Io.Dir) ?*const font.Font {
     const gpa = std.heap.page_allocator;
-    var s = assets.Stack.classic(io, gpa, dat) catch return null;
+    var s = assetStack(io, gpa, dat) catch return null;
     defer s.deinit();
     const bytes = readFont(&s, gpa, modules.ui().assets.dialog_font, entity.texts.language) orelse return null;
     dialog_font = font.parse(bytes) catch {
@@ -162,7 +168,7 @@ pub fn loadUiFonts(io: Io, dat: Io.Dir) UiFonts {
     if (!ui_fonts_read) {
         ui_fonts_read = true;
         const gpa = std.heap.page_allocator;
-        var s = assets.Stack.classic(io, gpa, dat) catch return .{ .small = null, .system = null };
+        var s = assetStack(io, gpa, dat) catch return .{ .small = null, .system = null };
         defer s.deinit();
         const ua = modules.ui().assets;
         for ([_][]const u8{ ua.small_font, ua.system_font }, &ui_fonts) |name, *dst| {

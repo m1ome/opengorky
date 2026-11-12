@@ -26,6 +26,18 @@ pub fn frameCount(s: *assets.Stack, level: []const u8, name: []const u8) u32 {
 
 /// `levels/<level>/background.bkg` (its header) or `.jpg`.
 pub fn backgroundSize(s: *assets.Stack, gpa: Allocator, level: []const u8) ?[2]u32 {
+    const px = pictureSize(s, gpa, level) orelse return null;
+    // A high-resolution picture (k times its `.zbf`) spans the level's own size.
+    var buf: [assets.max_path]u8 = undefined;
+    var head: [12]u8 = undefined;
+    const zname = std.fmt.bufPrint(&buf, "levels/{s}/background.zbf", .{level}) catch return px;
+    const z: ?[2]u32 = if (s.head(zname, &head) == 12 and std.mem.eql(u8, head[0..4], "zbc1")) .{ std.mem.readInt(u32, head[4..8], .little), std.mem.readInt(u32, head[8..12], .little) } else null;
+    const k = map.bgScale(px[0], px[1], z);
+    return .{ px[0] / k, px[1] / k };
+}
+
+/// The background picture's own pixels.
+fn pictureSize(s: *assets.Stack, gpa: Allocator, level: []const u8) ?[2]u32 {
     var buf: [assets.max_path]u8 = undefined;
     for ([_][]const u8{ "bkg", "jpg" }) |ext| {
         const name = std.fmt.bufPrint(&buf, "levels/{s}/background.{s}", .{ level, ext }) catch return null;

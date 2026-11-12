@@ -192,7 +192,15 @@ fn linkOwn(app: *App, v: *View, a: Allocator, u: og.script.ogs.parser.Unit) bool
     var p: og.script.ogs.link.Program = .{};
     var ld: og.script.ogs.link.Diagnostic = .{};
     const own = app.store.files.items[v.file].entry;
-    for (og.rules.scripts) |t| if (!std.ascii.eqlIgnoreCase(t.name, own)) addOther(a, &p, t.name, t.data, u);
+    var others: std.ArrayList(og.script.ogs.parser.Unit) = .empty;
+    for (og.rules.scripts) |t| if (!std.ascii.eqlIgnoreCase(t.name, own)) if (other(a, t.name, t.data, u)) |x| others.append(a, x) catch {};
+    // A level in several texts: one block, as every reader makes it (else each part after
+    // the first defined it twice and was dropped, its names unknown).
+    _ = og.script.ogs.levels.merge(a, others.items) catch {};
+    for (others.items) |x| {
+        var od: og.script.ogs.link.Diagnostic = .{};
+        p.add(a, x, &od) catch {};
+    }
     // The others' own calls are theirs to check (their views).
     p.linked = p.texts.items.len;
     var has: Has = .{ .app = app, .a = a };
@@ -270,22 +278,43 @@ fn sigilHints(v: *View, a: Allocator, u: og.script.ogs.parser.Unit) void {
     }
 }
 
-/// Another loaded text added to `p` (one that does not parse, or defines a name again,
-/// is left out as the engine leaves it).
-/// Text `src` added to `p`, without the parts of a level `own` writes too (a level in
-/// several texts, script/ogs/levels.zig: the view's part is checked as its own).
-fn addOther(a: Allocator, p: *og.script.ogs.link.Program, name: []const u8, src: []const u8, own: og.script.ogs.parser.Unit) void {
-    var diag: og.script.ogs.parser.Diagnostic = .{};
-    var u = og.script.ogs.parser.parse(a, src, name, &diag) catch return;
-    const ms = a.dupe(og.script.ir.Module, u.modules) catch return;
+/// Another loaded text, to add to the program (null: it does not parse, left out as the
+/// engine leaves it), without the parts of a level `own` writes too (a level in several
+/// texts, script/ogs/levels.zig: the view's part is checked as its own).
+pub fn other(a: Allocator, name: []const u8, src: []const u8, own: og.script.ogs.parser.Unit) ?og.script.ogs.parser.Unit {
+    var u = parsedOther(name, src) orelse return null;
+    const ms = a.dupe(og.script.ir.Module, u.modules) catch return null;
     for (ms) |*m| {
         var keep: std.ArrayList(og.script.ir.Entity) = .empty;
-        for (m.entities) |e| if (!ownsLevel(own, m.path, e)) keep.append(a, e) catch return;
+        for (m.entities) |e| if (!ownsLevel(own, m.path, e)) keep.append(a, e) catch return null;
         m.entities = keep.items;
     }
     u.modules = ms;
-    var ld: og.script.ogs.link.Diagnostic = .{};
-    p.add(a, u, &ld) catch {};
+    return u;
+}
+
+/// The other texts parsed, by name, parsed again only when their text changes: a check
+/// parsed all of a project's texts (~800) at every keystroke. Null: it does not parse.
+var parsed_arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+var parsed: std.StringHashMapUnmanaged(struct { hash: u64, unit: ?og.script.ogs.parser.Unit }) = .empty;
+var parsed_stale: usize = 0;
+
+fn parsedOther(name: []const u8, src: []const u8) ?og.script.ogs.parser.Unit {
+    const h = std.hash.Wyhash.hash(0, src);
+    if (parsed.get(name)) |e| if (e.hash == h) return e.unit;
+    // Replaced parses stay in the arena: start over once many have.
+    if (parsed.contains(name)) parsed_stale += 1;
+    if (parsed_stale > 64) {
+        parsed_stale = 0;
+        parsed = .empty;
+        _ = parsed_arena.reset(.retain_capacity);
+    }
+    const pa = parsed_arena.allocator();
+    var diag: og.script.ogs.parser.Diagnostic = .{};
+    const u = og.script.ogs.parser.parse(pa, src, name, &diag) catch null;
+    const key = if (parsed.getKey(name)) |k| k else pa.dupe(u8, name) catch return u;
+    parsed.put(pa, key, .{ .hash = h, .unit = u }) catch {};
+    return u;
 }
 
 /// `u` has level block `e` (of module `path`) too.
@@ -530,7 +559,7 @@ var game_ids: rulescheck.Known = .empty;
 
 /// What the Store and the catalog hold, as a key (Store.rev, Catalog.gen; the third
 /// slot is unused, code.View.checked_store's shape).
-fn storeKey(app: *const App) [3]usize {
+pub fn storeKey(app: *const App) [3]usize {
     return .{ @intCast(app.store.rev), @intCast(app.catalog.gen), 0 };
 }
 

@@ -116,6 +116,9 @@ pub const LevelView = struct {
     /// The location's sprites (`levels/<level>/sprites/…`) and background.
     assets: og.loaders.assets.Stack,
     background: gfx.Frames = .{},
+    /// Background pixels per level unit: a picture k times its `.zbf` on both sides (a
+    /// project's high-resolution background) is drawn k times smaller (`bgScale`).
+    bg_scale: u32 = 1,
     /// Sprite frames by name (lowercase), loaded on first draw.
     sprite_cache: std.StringHashMapUnmanaged(gfx.Frames) = .empty,
     /// Object z-frames (`<zbufFile>.spz`); null if there is no file.
@@ -290,7 +293,8 @@ pub const LevelView = struct {
 
     pub fn size(self: LevelView) [2]u32 {
         if (self.background.len() == 0) return .{ 0, 0 };
-        return self.background.sizes.items[0];
+        const sz = self.background.sizes.items[0];
+        return .{ sz[0] / self.bg_scale, sz[1] / self.bg_scale };
     }
 
     /// Runs as many game ticks as have passed since the last call.

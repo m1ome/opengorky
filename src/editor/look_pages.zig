@@ -12,6 +12,7 @@ const ui = @import("ui");
 const og = @import("opengorky");
 const clay = @import("clay.zig");
 const gui = @import("widgets.zig");
+const doctabs = @import("doctabs.zig");
 const lay = @import("layout.zig");
 const font_mod = @import("font.zig");
 const tx = @import("text.zig");
@@ -23,7 +24,8 @@ const entries = @import("entries.zig");
 const entry_model = @import("entry_model.zig");
 const entry_anims = @import("entry_anims.zig");
 const effectpage = @import("effectpage.zig");
-const common_archive = @import("store.zig").common_archive;
+const store_mod = @import("store.zig");
+const common_archive = store_mod.common_archive;
 const app_mod = @import("app.zig");
 const App = app_mod.App;
 const theme = app_mod.theme;
@@ -105,6 +107,10 @@ pub fn modelPage(app: *App, a: Allocator) void {
     head(mesh, tx.sec_model, std.fmt.allocPrint(a, models_dir ++ "{s}.msh", .{mesh}) catch mesh);
     if (gui.block(app, "model", tx.alloc(a, tx.tag_proto, .{tx.get(tx.sec_model)}), .{ .summary = entry_model.modelSummary(app, a, mesh) })) {
         entry_model.modelFields(app, a, null, mesh);
+        if (app.ogLayout() and modelFree(app, mesh)) {
+            if (gui.footer(app, "model_delete", &.{tx.get(tx.mdl_delete)}, null) != null) app.askDelete(.model, 0, mesh);
+            gui.fieldNote(tx.get(tx.mdl_delete_note), theme.dim);
+        }
         gui.blockEnd();
     }
     infoBlock(app, a, std.fmt.allocPrint(a, "model:{s}", .{mesh}) catch mesh, mesh, modelInfo);
@@ -116,6 +122,14 @@ fn modelInfo(mesh: []const u8, app: *App, list: *info.List) void {
     info.defined(list, common_archive, list.fmt(models_dir ++ "{s}.msh", .{mesh}), false);
     for (art.textures(app, list.a, mesh)) |t| list.add(.{ .group = .refs, .text = t, .to = .{ .doc = .{ .tab = .textures, .name = t } }, .icon = .image });
     const n = list.rows.items.len;
+    // OpenGorky: the blocks naming it (`mesh = "…"`: a look's, a weapon's), each at its line.
+    if (app.ogLayout()) {
+        for (app.store.listing(list.a, store_mod.og_src, null, true)) |path| {
+            const t = app.store.text(app.store.file(store_mod.og_src, path) catch continue);
+            if (meshAt(t, mesh)) |at| list.add(.{ .group = .used, .text = path, .to = .{ .code = .{ .archive = store_mod.og_src, .entry = path, .at = at } }, .icon = .code });
+        }
+        return info.usedNone(list, n, tx.look_used_none);
+    }
     for (app.catalog.acts.items) |act| {
         const f = actFile(app, act) orelse continue;
         if (std.ascii.eqlIgnoreCase(model.getStr(app.store.text(f), "mesh") orelse "", mesh)) list.add(.{ .group = .used, .text = act, .to = .{ .doc = .{ .tab = .anims, .name = scriptKey(app, list.a, f) } }, .icon = .play });
@@ -125,6 +139,112 @@ fn modelInfo(mesh: []const u8, app: *App, list: *info.List) void {
         if (std.ascii.eqlIgnoreCase(entries.meshOf(app, e, app.store.text(f)) orelse "", mesh)) list.add(.{ .group = .used, .text = info.entryText(list, e), .to = .{ .entry = i }, .icon = if (e.kind == .enemy or e.kind == .hero) .user else .package });
     }
     info.usedNone(list, n, tx.look_used_none);
+}
+
+/// Where text `t` names model `mesh` (`mesh = "grandma"`, `effect_mesh = "…"`), else null.
+fn meshAt(t: []const u8, mesh: []const u8) ?usize {
+    var from: usize = 0;
+    while (std.mem.indexOfPos(u8, t, from, "mesh = \"")) |k| : (from = k + 1) {
+        const v = t[k + 8 ..];
+        if (std.mem.startsWith(u8, v, mesh) and v.len > mesh.len and v[mesh.len] == '"') return k;
+    }
+    return null;
+}
+
+/// OpenGorky: the models the project has of its own (`src/assets/models/`, new ones not
+/// saved yet too) and those its blocks name, kept while the Store stays the same.
+var og_models: struct {
+    rev: usize = std.math.maxInt(usize),
+    arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator),
+    own: std.StringHashMapUnmanaged(void) = .empty,
+    /// Of `own`, those the game has none of.
+    alone: std.StringHashMapUnmanaged(void) = .empty,
+    used: std.StringHashMapUnmanaged(void) = .empty,
+} = .{};
+
+/// What the tree says beside model `name` of an OpenGorky project: the project's own,
+/// and whether nothing wears it (a game model unused is the game's business: "").
+pub fn modelNote(app: *App, name: []const u8) []const u8 {
+    const m = &og_models;
+    if (m.rev != app.store.rev) {
+        m.rev = app.store.rev;
+        _ = m.arena.reset(.retain_capacity);
+        m.own = .empty;
+        m.alone = .empty;
+        m.used = .empty;
+        const a = m.arena.allocator();
+        for (models(app, a)) |x| {
+            var eb: [160]u8 = undefined;
+            var pb: [512]u8 = undefined;
+            const entry = std.fmt.bufPrint(&eb, models_dir ++ "{s}.msh", .{x}) catch continue;
+            const sub = store_mod.ownAsset(&pb, app.store.root, common_archive, entry) orelse continue;
+            const on_disk = if (app.store.root) |r| if (r.statFile(app.io, sub, .{})) |_| true else |_| false else false;
+            if (!on_disk and !art.editorMade(app, entry)) continue;
+            m.own.put(a, x, {}) catch {};
+            if (!app.store.inGame(common_archive, entry)) m.alone.put(a, x, {}) catch {};
+        }
+        for (app.store.listing(a, store_mod.og_src, null, false)) |path| {
+            const t = app.store.text(app.store.file(store_mod.og_src, path) catch continue);
+            var from: usize = 0;
+            while (std.mem.indexOfPos(u8, t, from, "mesh = \"")) |k| : (from = k + 1) {
+                const v = t[k + 8 ..];
+                const q = std.mem.indexOfScalar(u8, v, '"') orelse break;
+                m.used.put(a, a.dupe(u8, v[0..q]) catch continue, {}) catch {};
+            }
+        }
+    }
+    if (!m.own.contains(name)) return "";
+    return tx.get(if (m.used.contains(name)) tx.mdl_own else tx.mdl_own_unused);
+}
+
+/// OpenGorky: model `name` is the project's alone (the game has none) and nothing wears it.
+fn modelFree(app: *App, name: []const u8) bool {
+    _ = modelNote(app, name);
+    return og_models.alone.contains(name) and !og_models.used.contains(name);
+}
+
+/// Model `name` taken out of the project (OpenGorky; one undo step, saving deletes the
+/// files from src/assets/): its .msh, .ani, .bfr and the textures of its that neither the
+/// game nor another model of the project has.
+pub fn deleteModel(app: *App, name: []const u8) !void {
+    if (!modelFree(app, name)) return error.ModelNotFree;
+    const a = app.frame.allocator();
+    var files: std.ArrayList(usize) = .empty;
+    // Its textures read before the .msh naming them goes.
+    for (art.textures(app, a, name)) |t| {
+        const e = try std.fmt.allocPrint(a, textures_dir ++ "{s}", .{t});
+        if (app.store.inGame(common_archive, e)) continue;
+        // A game model names only the game's textures: the project's other models are enough.
+        var it = og_models.own.keyIterator();
+        const shared = find: while (it.next()) |m| {
+            if (std.mem.eql(u8, m.*, name)) continue;
+            for (art.textures(app, a, m.*)) |u| if (std.ascii.eqlIgnoreCase(u, t)) break :find true;
+        } else false;
+        if (!shared) if (app.store.file(common_archive, e)) |i| try files.append(a, i) else |_| {};
+    }
+    for ([_][]const u8{ "msh", "ani", "bfr" }) |ext| {
+        const e = try std.fmt.allocPrint(a, models_dir ++ "{s}.{s}", .{ name, ext });
+        if (app.store.file(common_archive, e)) |i| try files.append(a, i) else |_| {}
+    }
+    if (files.items.len == 0) return error.NoModelFiles;
+    if (doctabs.isShown(app, .models, name)) doctabs.closeActive(app);
+    try app.store.delete(files.items);
+    app.setStatus(tx.st_mdl_deleted, .{ name, files.items.len });
+}
+
+/// A new model from a `.glb` (OpenGorky, the tree's Models): only added — named after the
+/// file, nothing wears it until a look's or weapon's Model picks it.
+pub fn onGlbNew(app: *App, _: app_mod.FileAsk, path: []const u8) !void {
+    var buf: [24]u8 = undefined;
+    var n: usize = 0;
+    const stem = std.fs.path.stem(path);
+    for (stem) |ch| if (n < buf.len and (std.ascii.isAlphanumeric(ch) or ch == '_')) {
+        buf[n] = std.ascii.toLower(ch);
+        n += 1;
+    };
+    const r = art.importGlb(app, if (n > 0) buf[0..n] else "model", path, app.importTarget()) catch |err| return entry_model.glbFailed(app, err);
+    @import("doctabs.zig").show(app, .models, r.name);
+    app.setStatusPort(tx.st_glb_new, .{ r.name, r.textures }, tx.st_og_art);
 }
 
 fn actFile(app: *App, act: []const u8) ?usize {

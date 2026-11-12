@@ -561,11 +561,10 @@ fn panel(app: *App, a: Allocator) void {
     var th: f32 = 0;
     _ = sdl.SDL_GetTextureSize(t, &tw, &th);
     const pid = clay.id("camp_panel_pic");
-    // The block's width (its last layout), the picture's shape kept.
-    const pw = if (clay.box(clay.id("camp_panel_box"))) |b| b.width else tw;
-    const s = pw / @max(1, tw);
-    clay.open(.{ .id = clay.id("camp_panel_box"), .layout = .{ .sizing = .{ .width = clay.grow() } } });
-    clay.open(.{ .id = pid, .layout = .{ .sizing = .{ .width = clay.fixed(pw), .height = clay.fixed(th * s) } }, .image = .{ .imageData = t } });
+    // The picture fills the block's width, its shape kept (aspectRatio: a fixed width would
+    // hold the block open, never letting it narrow); the places scale as its last layout.
+    const s = (if (clay.box(pid)) |b| b.width else tw) / @max(1, tw);
+    clay.open(.{ .id = pid, .layout = .{ .sizing = .{ .width = clay.grow() } }, .aspectRatio = .{ .aspectRatio = tw / @max(1, th) }, .image = .{ .imageData = t } });
     for (ps, 0..) |p, k| {
         var r = p.rect;
         if (st.drag) |d| if (d.k == k) {
@@ -582,7 +581,6 @@ fn panel(app: *App, a: Allocator) void {
             if (clay.box(pid)) |b| st.drag = .{ .k = k, .at = .{ r[0], r[1] }, .grab = .{ (app.mouse[0] - b.x) / s - r[0], (app.mouse[1] - b.y) / s - r[1] } };
         }
     }
-    clay.close();
     clay.close();
     // A place being dragged follows the pointer by whole pixels; on release it is written.
     if (st.drag) |*d| if (clay.box(pid)) |b| {

@@ -152,9 +152,11 @@ pub const Program = struct {
                 else => return fail(a, diag, prelude_file, pd.line, "{s}", .{pd.message}),
             };
             try self.texts.append(a, pre);
+            try self.indexText(a, pre, diag);
         }
         try self.texts.append(a, u);
-        self.index(a, diag) catch |err| {
+        // Only the new text's names: re-indexing them all made adding n texts quadratic.
+        self.indexText(a, u, diag) catch |err| {
             _ = self.texts.pop();
             var ignored: Diagnostic = .{};
             self.index(a, &ignored) catch {};
@@ -172,14 +174,24 @@ pub const Program = struct {
         self.namespaces.clearRetainingCapacity();
         self.blocks.clearRetainingCapacity();
         self.block_paths.clearRetainingCapacity();
+        // The prelude first (it is the first text), as `add` indexes them.
+        for (self.texts.items) |u| if (isPrelude(u)) try self.indexText(a, u, diag);
+        for (self.texts.items) |u| if (!isPrelude(u)) try self.indexText(a, u, diag);
+    }
+
+    /// Text `u`'s names into the maps (the texts before it indexed already).
+    fn indexText(self: *Program, a: Allocator, u: parser.Unit, diag: *Diagnostic) Error!void {
         // The engine's types, in `foundation` (its traits stay `traits.find`'s).
         try self.namespaces.put(a, foundation, {});
-        for (self.texts.items) |u| if (isPrelude(u)) for (u.modules) |m| {
-            var fm = m;
-            fm.path = foundation;
-            try self.indexTypes(a, u, fm, diag);
-        };
-        for (self.texts.items) |u| if (!isPrelude(u)) for (u.modules) |m| {
+        if (isPrelude(u)) {
+            for (u.modules) |m| {
+                var fm = m;
+                fm.path = foundation;
+                try self.indexTypes(a, u, fm, diag);
+            }
+            return;
+        }
+        for (u.modules) |m| {
             try self.namespaces.put(a, m.path, {});
             // Each prefix of `a::b::c` is a namespace too.
             var it = std.mem.splitSequence(u8, m.path, "::");
@@ -200,7 +212,7 @@ pub const Program = struct {
                 try self.block_paths.put(a, path, {});
             }
             try self.modules.append(a, m);
-        };
+        }
         // `Shielded::absorb` names a trait's body or a module's function: not both.
         var it = self.traits.iterator();
         while (it.next()) |e| if (self.namespaces.contains(e.key_ptr.*)) return fail(a, diag, e.value_ptr.*.file, e.value_ptr.*.line, "{s} is both a trait and a module", .{e.key_ptr.*});

@@ -36,6 +36,8 @@ const codecheck = @import("codecheck.zig");
 const codeside = @import("codeside.zig");
 const codedraw = @import("codedraw.zig");
 const codecomplete = @import("codecomplete.zig");
+const codesym = @import("codesym.zig");
+const codehist = @import("codehist.zig");
 
 pub const anyChanged = codetabs.anyChanged;
 pub const apply = codetabs.apply;
@@ -84,6 +86,15 @@ pub fn key(app: *App, v: *View, k: c.SDL_Keycode, mod: c.SDL_Keymod) bool {
     const word = if (mac) alt else (mod & c.SDL_KMOD_CTRL) != 0;
     const edge = mac and (mod & c.SDL_KMOD_GUI) != 0;
     const b = &v.buf;
+    // Back and Forward through the jumps (codehist): Ctrl+- / Ctrl+Shift+- (VS Code), and
+    // off the Mac Alt+Left/Right (there Alt moves by words).
+    if ((k == c.SDLK_MINUS and (mod & c.SDL_KMOD_CTRL) != 0) or (!mac and alt and (k == c.SDLK_LEFT or k == c.SDLK_RIGHT))) {
+        const fwd = if (k == c.SDLK_MINUS) shift else k == c.SDLK_RIGHT;
+        if (!codehist.step(app, fwd)) {
+            if (fwd) app.setStatus(tx.st_hist_forward, .{}) else app.setStatus(tx.st_hist_back, .{});
+        }
+        return true;
+    }
     // Moves and deletes first: their modifiers differ by platform.
     switch (k) {
         c.SDLK_LEFT => if (word) b.wordLeft(shift) else if (edge) b.home(shift) else b.left(shift),
@@ -250,47 +261,96 @@ fn findBefore(t: []const u8, q: []const u8, before: usize) ?usize {
 /// this file or another game script), else what the word or string there names
 /// (codenav): opened, a pick list when it is several, a status line when nothing.
 pub fn goTo(app: *App, v: *View) void {
-    const t = v.buf.str();
-    const tok = code.tokenAt(t, v.buf.cursor) orelse return;
-    const w = t[tok.start..tok.end];
-    if (!tok.string) {
-        if (ownFn(t, w)) |at| {
-            v.buf.anchor = null;
-            v.buf.cursor = at;
-            follow(v);
-            return;
-        }
-        if (codecheck.gameFn(app, w)) |g| {
-            const bar = std.mem.indexOfScalar(u8, g.file, '|') orelse return;
-            // Another file: in a tab of its own, this one kept.
-            doctabs.keepCurrent(app);
-            return open(app, app.store.file(g.file[0..bar], g.file[bar + 1 ..]) catch return, g.at);
-        }
-    }
     _ = codenav.picks_arena.reset(.retain_capacity);
     const pa = codenav.picks_arena.allocator();
-    var list: std.ArrayList(codenav.Hit) = .empty;
-    list.appendSlice(pa, codenav.resolve(app, pa, w, true)) catch {};
-    // A rules call's name, field or value: the campaign's page; the entity the value or
-    // the row's key names; else the call's doc.
-    if (codecomplete.rulesFile(app, v)) if (rulesRow(t, v.buf.cursor)) |row| {
-        if (std.ascii.eqlIgnoreCase(row.name, "Campaign")) {
-            list.append(pa, .{ .label = tx.alloc(pa, tx.code_rules_row, .{row.name}), .to = .{ .doc = .{ .tab = .campaign, .name = "" } } }) catch {};
-        } else if (rowHits(app, pa, t, v.buf.cursor, row.src, &list)) {
-            const rc = rulesapi.find(row.name) orelse return;
-            return app.setStatus(tx.st_rules_call, .{ codeside.signatureOf(pa, rc), tx.get(rc.doc) });
-        }
-    };
-    const hits = list.items;
-    switch (hits.len) {
-        0 => app.setStatus(tx.st_goto_none, .{w}),
-        1 => codenav.go(app, hits[0]),
-        else => {
-            codenav.picks = hits;
-            v.picks = true;
-            v.menu = menuAt(app, v);
+    switch (defsAt(app, v, pa, v.buf.cursor)) {
+        .none => {},
+        .here => |at| {
+            codehist.leave(app);
+            v.buf.anchor = null;
+            v.buf.cursor = at;
+            centre(v);
+        },
+        .file => |g| {
+            // Another file: in a tab (this one kept, unless a jump opened it: codehist).
+            const f = app.store.file(g.archive, g.entry) catch return;
+            codehist.leave(app);
+            open(app, f, g.at);
+            codehist.arrived(app);
+        },
+        .rules_doc => |rc| app.setStatus(tx.st_rules_call, .{ codeside.signatureOf(pa, rc), tx.get(rc.doc) }),
+        .help => |w| _ = @import("reference.zig").openWord(app, w),
+        .hits => |hits| switch (hits.len) {
+            0 => {
+                const t = v.buf.str();
+                const tok = code.tokenAt(t, v.buf.cursor) orelse return;
+                app.setStatus(tx.st_goto_none, .{t[tok.start..tok.end]});
+            },
+            1 => codenav.go(app, hits[0]),
+            else => {
+                codenav.picks = hits;
+                v.picks = true;
+                v.menu = menuAt(app, v);
+            },
         },
     }
+}
+
+/// Where Go to at offset `i` leads, nothing done (goTo acts on it; the code probe counts it).
+const Defs = union(enum) {
+    /// No token at `i`.
+    none,
+    /// A function of this text, at that offset.
+    here: usize,
+    /// A game script's function: its file and offset.
+    file: struct { archive: []const u8, entry: []const u8, at: usize },
+    /// A rules row naming nothing: the call's doc instead.
+    rules_doc: *const rulesapi.Call,
+    /// The engine's own name (a builtin): its Reference article.
+    help: []const u8,
+    /// What the word or string names (none: nothing).
+    hits: []const codenav.Hit,
+};
+
+pub fn defsAt(app: *App, v: *View, a: Allocator, i: usize) Defs {
+    const t = v.buf.str();
+    const tok = code.tokenAt(t, i) orelse return .none;
+    const w = t[tok.start..tok.end];
+    // `a::b::f` up to the word: the whole path is the name.
+    const qw = if (tok.string) w else t[codesym.qualifiedStart(t, tok.start)..codesym.qualifiedEnd(t, tok.end)];
+    if (!tok.string) {
+        // A project's own declaration: its code.
+        const ds = codesym.defsAt(app, v, a, i);
+        const own = app.store.files.items[v.file];
+        if (ds.len == 1 and std.mem.eql(u8, ds[0].archive, own.archive) and std.ascii.eqlIgnoreCase(ds[0].entry, own.entry)) return .{ .here = ds[0].at };
+        if (ds.len > 0) {
+            const hits = a.alloc(codenav.Hit, ds.len) catch return .none;
+            for (ds, hits) |d, *h| h.* = .{ .label = d.label, .to = .{ .code = .{ .archive = d.archive, .entry = d.entry, .at = d.at } } };
+            return .{ .hits = hits };
+        }
+        if (ownFn(t, w)) |at| return .{ .here = at };
+        if (codecheck.gameFn(app, w)) |g| {
+            const bar = std.mem.indexOfScalar(u8, g.file, '|') orelse return .none;
+            return .{ .file = .{ .archive = g.file[0..bar], .entry = g.file[bar + 1 ..], .at = g.at } };
+        }
+    }
+    var list: std.ArrayList(codenav.Hit) = .empty;
+    list.appendSlice(a, codenav.resolve(app, a, qw, true)) catch {};
+    if (list.items.len == 0 and qw.len != w.len) list.appendSlice(a, codenav.resolve(app, a, w, true)) catch {};
+    // A string naming a block or a row of the project (`"cam_1"`: the scene's point).
+    if (list.items.len == 0 and tok.string) for (codesym.defsAt(app, v, a, i)) |d| list.append(a, .{ .label = d.label, .to = .{ .code = .{ .archive = d.archive, .entry = d.entry, .at = d.at } } }) catch {};
+    // A rules call's name, field or value: the campaign's page; the entity the value or
+    // the row's key names; else the call's doc.
+    if (codecomplete.rulesFile(app, v)) if (rulesRow(t, i)) |row| {
+        if (std.ascii.eqlIgnoreCase(row.name, "Campaign")) {
+            list.append(a, .{ .label = tx.alloc(a, tx.code_rules_row, .{row.name}), .to = .{ .doc = .{ .tab = .campaign, .name = "" } } }) catch {};
+        } else if (rowHits(app, a, t, i, row.src, &list)) {
+            return if (rulesapi.find(row.name)) |rc| .{ .rules_doc = rc } else .none;
+        }
+    };
+    // Nothing of the game's: an engine builtin's article.
+    if (list.items.len == 0 and !tok.string) if (@import("reference.zig").find(qw) != null) return .{ .help = qw };
+    return .{ .hits = list.items };
 }
 
 /// Go to on rules row `src` (a slice of `t`) at offset `i`: what the value there names
@@ -365,7 +425,7 @@ fn helpWord(app: *App, v: *View) bool {
 pub fn findUsages(app: *App, v: *View) void {
     const t = v.buf.str();
     const tok = code.tokenAt(t, v.buf.cursor) orelse return;
-    codenav.findUses(app, t[tok.start..tok.end]);
+    codenav.findUses(app, t[tok.start..tok.end], v, v.buf.cursor);
     app.code_bottom = .usages;
 }
 
@@ -437,6 +497,14 @@ pub fn pointOf(app: *App, v: *const View, i: usize) [2]f32 {
     return .{ v.rect.x + gutter - v.hscroll + codedraw.width(app, t[ls..i]) + half, v.rect.y + 4 + @as(f32, @floatFromInt(line -| v.scroll)) * line_h + line_h / 2 };
 }
 
+/// The cursor's line in the middle of the view (a jump's target).
+fn centre(v: *View) void {
+    const t = v.buf.str();
+    const line = std.mem.count(u8, t[0..v.buf.cursor], "\n");
+    v.scroll = line -| codedraw.visibleLines(v) / 2;
+    v.follow_x = true;
+}
+
 /// Scrolls so the cursor's line is shown (and its column, at the next draw).
 pub fn follow(v: *View) void {
     const t = v.buf.str();
@@ -451,6 +519,9 @@ pub fn follow(v: *View) void {
 /// The wheel over the text: lines up and down; sideways (a trackpad's swipe, Shift with
 /// the wheel) the long lines, by the gesture's main axis as the other scroll areas.
 pub fn wheel(v: *View, dx: f32, dy: f32, shift: bool) void {
+    // The words pass under a still pointer: its tip waits until the text rests (else each
+    // word's tip was worked out while scrolling).
+    v.rest_since = c.SDL_GetTicks();
     const sx = if (shift and dx == 0) dy else dx;
     if (@abs(sx) > @abs(dy) or (shift and sx != 0)) {
         v.hscroll -= sx * 3 * line_h;

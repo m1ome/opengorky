@@ -32,7 +32,7 @@ pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir, world: *Wor
     errdefer backdrop_arena.deinit();
     const bd = try world.res.source.loadBackdrop(backdrop_arena.allocator());
     var path_buf: [256]u8 = undefined;
-    var sprites: og.loaders.assets.Stack = try .classic(io, gpa, dat);
+    var sprites: og.loaders.assets.Stack = try og.loaders.assetStack(io, gpa, dat);
     errdefer sprites.deinit();
     // No sprite.dat, no view (as before the stack).
     _ = try sprites.archiveOf(try std.fmt.bufPrint(&path_buf, "{s}/sprite.dat", .{name}));
@@ -55,6 +55,12 @@ pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir, world: *Wor
         for (view.walk_textures) |t| if (t) |tex| c.SDL_DestroyTexture(tex);
     }
     if (bd.background) |bg| view.background = try level_file.loadEntry(gpa, r, &view.assets, bg);
+    if (view.background.len() > 0) {
+        const sz = view.background.sizes.items[0];
+        view.bg_scale = core_map.bgScale(sz[0], sz[1], if (bd.heights) |h| .{ h.width, h.height } else null);
+        // Drawn smaller (or 1:1 in a frame as detailed): smoothed, not every k-th pixel.
+        if (view.bg_scale > 1) view.background.smoothScaling();
+    }
     if (models != null) try actor_layer.makeLayer(&view, 1, 640, 480);
     if (snd) |s| {
         view.scene = Scene.init(gpa, s.bank, s.mixer, s.params);
@@ -76,7 +82,7 @@ pub fn setDetail(self: *LevelView, ss: u32, lw: u32, lh: u32) void {
 }
 
 pub fn draw(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32, mouse: [2]f32) !void {
-    if (self.background.len() > 0) try self.background.draw(r, 0, -scroll[0], -scroll[1]);
+    if (self.background.len() > 0) try self.background.drawScaled(r, 0, -scroll[0], -scroll[1], self.bg_scale);
     if (self.show_objects) {
         // The exe object list (0x63bcb8) grows at the head (0x4316da…0x431700,
         // 0x431c2b) and is drawn from the head (0x420892…0x4208b0): newer objects

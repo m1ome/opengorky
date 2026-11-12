@@ -262,6 +262,23 @@ pub const Backdrop = struct {
     heights: ?Heights = null,
 };
 
+/// Background pixels per level unit: k when the picture (`w`×`h`) is k ≥ 2 times the
+/// depth map (`.zbf`, `z`: the level's own size) on both sides — a project's
+/// high-resolution background, drawn k times smaller — else 1.
+pub fn bgScale(w: u32, h: u32, z: ?[2]u32) u32 {
+    const zz = z orelse return 1;
+    if (zz[0] == 0 or zz[1] == 0 or w % zz[0] != 0) return 1;
+    const k = w / zz[0];
+    return if (k >= 2 and h == zz[1] * k) k else 1;
+}
+
+test "bgScale: a picture k times its depth map" {
+    try std.testing.expectEqual(@as(u32, 1), bgScale(1280, 1140, .{ 1280, 1140 }));
+    try std.testing.expectEqual(@as(u32, 2), bgScale(2560, 2280, .{ 1280, 1140 }));
+    try std.testing.expectEqual(@as(u32, 1), bgScale(2560, 2200, .{ 1280, 1140 }));
+    try std.testing.expectEqual(@as(u32, 1), bgScale(2560, 2280, null));
+}
+
 /// Background depth per pixel (`.zbf`), rows top to bottom.
 pub const Heights = struct { width: u32, height: u32, depth: []u16 };
 

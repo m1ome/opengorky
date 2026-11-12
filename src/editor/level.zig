@@ -265,6 +265,12 @@ pub const Doc = struct {
         _ = c.SDL_UpdateTexture(t, null, img.pixels.ptr, @intCast(img.width * 4));
         self.bg = t;
         self.bg_size = .{ @floatFromInt(img.width), @floatFromInt(img.height) };
+        // A high-resolution picture (k times its `.zbf`, core.map.bgScale) spans the
+        // level's own size, as the source has it: drawn smaller, smoothed.
+        if (self.world.res.source.backgroundSize()) |base| if (base[0] > 0 and base[0] < img.width) {
+            self.bg_size = .{ @floatFromInt(base[0]), @floatFromInt(base[1]) };
+            _ = c.SDL_SetTextureScaleMode(t, c.SDL_SCALEMODE_LINEAR);
+        };
     }
 
     /// Level `name`'s background picture as the Store has it (null: none; `self.gpa` owns it).

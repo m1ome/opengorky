@@ -39,6 +39,11 @@ pub fn next(t: []const u8, i: usize) usize {
     return k;
 }
 
+/// The list's words at offset `i` of `t`, a text of `v`'s kind (the code probe types into a copy).
+pub fn wordsAt(app: *App, v: *const View, a: Allocator, t: []const u8, i: usize) []const []const u8 {
+    return completion.candidates(a, t, i, false, where(app, v), source(app));
+}
+
 /// What text `v` is (completion.Where).
 fn where(app: *App, v: *const View) completion.Where {
     return .{ .rules = rulesFile(app, v), .ogs = isOgs(app, v), .hooks = hooksFile(app, v), .level_hooks = levelHooks(app, v), .scene = isScene(v.title) };
@@ -84,6 +89,7 @@ fn appNames(ctx: *anyopaque, a: Allocator, what: completion.Names, actor: []cons
         .weapon_classes => for (@import("item_page.zig").class_values) |x| out.append(a, @import("item_page.zig").classLabel(a, @floatFromInt(x))) catch {},
         .calls => return app.catalog.calls.keys(),
         .components => for (@import("char_abilities.zig").components(a)) |cp| out.append(a, cp.path) catch {},
+        .program => return @import("codesym.zig").names(app, app.code orelse return &.{}, a),
     }
     return out.items;
 }

@@ -147,6 +147,7 @@ pub fn panel(app: *App, a: Allocator) void {
             .component => {
                 entryFolder(app, a, "items", .package, tx.get(tx.at_items), &.{ .{ "weapon", tx.at_weapons }, .{ "ammo", tx.at_ammo }, .{ "item", tx.at_things }, .{ "attack", tx.at_attacks } });
                 aiFolder(app, a);
+                if (app.ogLayout()) codeFolders(app, a);
                 pageRows(app, t);
             },
             .asset => {
@@ -155,7 +156,7 @@ pub fn panel(app: *App, a: Allocator) void {
                 media(app, a);
                 // OpenGorky: a look is its character's (the character's page shows it, its
                 // model a click away).
-                if (!app.ogLayout()) looks(app, a);
+                looks(app, a);
                 sprites(app, a);
                 textsFolder(app, a);
             },
@@ -387,8 +388,35 @@ fn codeFolders(app: *App, a: Allocator) void {
     for (natives) |c| n += @intFromBool(matches(app, &.{c.name}));
     if (n == 0 and app.treeQuery().len > 0) return;
     if (!folder(app, a, "code_comps", 0, .code, tx.get(tx.at_code_comps), n)) return;
-    for (p.comps) |c| if (matches(app, &.{c.path}) and leaf(app, 1, null, .code, c.path, baseName(c.file), doctabs.isShown(app, .components, c.path), null)) doctabs.show(app, .components, c.path);
+    // A level's own (the level's and its objects' behaviours, hundreds): under Levels, by level.
+    var lvs: std.ArrayList([]const u8) = .empty;
+    var in_levels: usize = 0;
+    for (p.comps) |c| if (levelOf(c.file)) |l| if (matches(app, &.{c.path})) {
+        in_levels += 1;
+        for (lvs.items) |x| (if (std.mem.eql(u8, x, l)) break) else lvs.append(a, l) catch {};
+    };
+    if (in_levels > 0 and folder(app, a, "code_comps/levels", 1, null, tx.get(tx.at_spr_levels), in_levels)) for (lvs.items) |l| {
+        var k: usize = 0;
+        for (p.comps) |c| k += @intFromBool(isOf(c.file, l) and matches(app, &.{c.path}));
+        if (!folder(app, a, std.fmt.allocPrint(a, "code_comps/{s}", .{l}) catch continue, 2, null, l, k)) continue;
+        for (p.comps) |c| if (isOf(c.file, l) and matches(app, &.{c.path}) and leaf(app, 3, null, .code, c.path[if (std.mem.lastIndexOf(u8, c.path, "::")) |x| x + 2 else 0..], baseName(c.file), doctabs.isShown(app, .components, c.path), null)) doctabs.show(app, .components, c.path);
+    };
+    for (p.comps) |c| if (levelOf(c.file) == null and matches(app, &.{c.path}) and leaf(app, 1, null, .code, c.path, baseName(c.file), doctabs.isShown(app, .components, c.path), null)) doctabs.show(app, .components, c.path);
     for (natives) |c| if (matches(app, &.{c.name}) and leaf(app, 1, null, .settings, c.name, tx.get(tx.tr_native), doctabs.isShown(app, .components, c.name), null)) doctabs.show(app, .components, c.name);
+}
+
+/// The level whose folder holds `file`: `01_port_store` of
+/// `locations/01_port_store/matrix.ogs` (its objects' components, its own block's code).
+fn levelOf(file: []const u8) ?[]const u8 {
+    var it = std.mem.splitScalar(u8, file, '/');
+    const top = it.next() orelse return null;
+    if (!std.mem.eql(u8, top, "locations") and !std.mem.eql(u8, top, "battles")) return null;
+    const name = it.next() orelse return null;
+    return if (it.peek() == null) null else name;
+}
+
+fn isOf(file: []const u8, level: []const u8) bool {
+    return if (levelOf(file)) |x| std.mem.eql(u8, x, level) else false;
 }
 
 fn scenes(app: *App, a: Allocator) void {
@@ -608,11 +636,17 @@ fn looks(app: *App, a: Allocator) void {
     const lp = @import("look_pages.zig");
     const searching = app.treeQuery().len > 0;
     // While searching (every folder open) only those with a match.
-    if (searching and matching(app, lp.models(app, a)) + matching(app, app.catalog.acts.items) + matching(app, lp.textures(app, a)) == 0) return;
+    const acts = if (app.ogLayout()) &.{} else app.catalog.acts.items;
+    if (searching and matching(app, lp.models(app, a)) + matching(app, acts) + matching(app, lp.textures(app, a)) == 0) return;
     if (!folder(app, a, "looks", 0, .box, tx.get(tx.at_looks), std.math.maxInt(usize))) return;
     const ms = lp.models(app, a);
-    if (!(searching and matching(app, ms) == 0) and folder(app, a, "looks/models", 1, null, tx.get(tx.at_models), ms.len)) lookRows(app, .models, .box, ms);
-    if (!(searching and matching(app, app.catalog.acts.items) == 0) and folder(app, a, "looks/anims", 1, null, tx.get(tx.sec_anims), app.catalog.acts.items.len)) for (app.catalog.acts.items) |act| {
+    if (!(searching and matching(app, ms) == 0) and folder(app, a, "looks/models", 1, null, tx.get(tx.at_models), ms.len)) {
+        // OpenGorky: a model added first, worn later (a look's Model picks it; the old one stays).
+        if (app.ogLayout() and addRow(app, 2, tx.mdl_import_new)) app.askFile(.{ .kind = .glb, .run = lp.onGlbNew });
+        lookRows(app, .models, .box, ms);
+    }
+    // The look scripts (`act_*.ss`) are Classic's: an OpenGorky look is a block of src/looks/.
+    if (!app.ogLayout() and !(searching and matching(app, app.catalog.acts.items) == 0) and folder(app, a, "looks/anims", 1, null, tx.get(tx.sec_anims), app.catalog.acts.items.len)) for (app.catalog.acts.items) |act| {
         if (!matches(app, &.{act})) continue;
         const key = std.fmt.allocPrint(a, "{s}|classes\\{s}", .{ common_archive, act }) catch continue;
         if (leaf(app, 2, null, .play, act, "", doctabs.isShown(app, .anims, key), null)) doctabs.show(app, .anims, key);
@@ -634,7 +668,8 @@ fn lookRows(app: *App, tab: Tab, ic: icons.Icon, names: []const []const u8) void
         // shortcut: 400 rows at most; the search narrows the rest.
         shown += 1;
         if (shown > 400) break;
-        if (leaf(app, 2, null, ic, n, "", doctabs.isShown(app, tab, n), null)) doctabs.show(app, tab, n);
+        const note = if (tab == .models and app.ogLayout()) @import("look_pages.zig").modelNote(app, n) else "";
+        if (leaf(app, 2, null, ic, n, note, doctabs.isShown(app, tab, n), null)) doctabs.show(app, tab, n);
     }
 }
 

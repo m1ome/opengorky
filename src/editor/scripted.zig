@@ -81,6 +81,7 @@ pub const ops = [_]Op{
     .{ .name = "--code-menu", .arity = 2, .run = opCodeAt },
     .{ .name = "--code-usages", .arity = 0, .run = opCodeUsages },
     .{ .name = "--code-check-all", .arity = 0, .run = opCodeCheckAll },
+    .{ .name = "--code-probe", .arity = 1, .run = opCodeProbe },
     .{ .name = "--copy", .arity = 1, .run = opCopy },
     .{ .name = "--copy-as", .arity = 2, .run = opCopyAs },
     .{ .name = "--box-delete", .arity = 1, .run = opDeleteBox },
@@ -112,6 +113,9 @@ pub const ops = [_]Op{
     .{ .name = "--icon", .arity = 1, .run = opIcon },
     .{ .name = "--anims-import", .arity = 2, .run = opArtFile },
     .{ .name = "--glb-import", .arity = 2, .run = opArtFile },
+    .{ .name = "--glb-new", .arity = 1, .run = opGlbNew },
+    .{ .name = "--model-delete", .arity = 1, .run = opModelDelete },
+    .{ .name = "--model-export", .arity = 2, .run = opModelExport },
     .{ .name = "--icon-import", .arity = 2, .run = opArtFile },
     .{ .name = "--sound-import", .arity = 1, .run = opImportSound },
     .{ .name = "--texture-import", .arity = 2, .run = opArtFile },
@@ -339,6 +343,24 @@ fn opArtFile(app: *App, op: []const []const u8) !void {
     return app.fileChosen(.{ .kind = .png, .run = handler, .entry = i, .slot = slot }, op[2]);
 }
 
+/// `--model-delete NAME`: the project's own unworn model deleted, as its page's button
+/// confirmed (look_pages.deleteModel).
+fn opModelDelete(app: *App, op: []const []const u8) !void {
+    return @import("look_pages.zig").deleteModel(app, op[1]);
+}
+
+/// `--model-export NAME FILE`: model NAME (by its mesh name) to FILE, as its page's
+/// "Export model (.glb)".
+fn opModelExport(app: *App, op: []const []const u8) !void {
+    doctabs.show(app, .models, op[1]);
+    return @import("look_pages.zig").onGlbOut(app, .{ .kind = .glb_out, .run = @import("look_pages.zig").onGlbOut }, op[2]);
+}
+
+/// `--glb-new FILE`: a new model from FILE, only added (OpenGorky: the tree's Models).
+fn opGlbNew(app: *App, op: []const []const u8) !void {
+    app.fileChosen(.{ .kind = .glb, .run = @import("look_pages.zig").onGlbNew }, op[1]);
+}
+
 fn opSceneSkip(app: *App, op: []const []const u8) !void {
     return scenepage.scripted(app, app.frame.allocator(), op[0][8] == 's', op[1]);
 }
@@ -395,6 +417,11 @@ fn opCodeGoto(app: *App, op: []const []const u8) !void {
 fn opCodeCheckAll(app: *App, op: []const []const u8) !void {
     _ = op;
     try codeview.checkAll(app);
+}
+
+/// `--code-probe PREFIX`: what Go to, the tip and completion know in the texts under PREFIX (codeprobe.zig).
+fn opCodeProbe(app: *App, op: []const []const u8) !void {
+    try @import("codeprobe.zig").run(app, op[1]);
 }
 
 /// `--code-usages`: Find usages of the word at the cursor.
@@ -732,7 +759,7 @@ fn opKey(app: *App, op: []const []const u8) !void {
     @memcpy(name[0..k.len], k);
     ev.key = c.SDL_GetKeyFromName(&name);
     if (ev.key == c.SDLK_UNKNOWN) return error.BadKey;
-    while (it.next()) |m| ev.mod |= if (std.mem.eql(u8, m, "cmd")) c.SDL_KMOD_GUI else if (std.mem.eql(u8, m, "shift")) c.SDL_KMOD_SHIFT else if (std.mem.eql(u8, m, "alt")) c.SDL_KMOD_ALT else return error.BadKey;
+    while (it.next()) |m| ev.mod |= if (std.mem.eql(u8, m, "cmd")) c.SDL_KMOD_GUI else if (std.mem.eql(u8, m, "shift")) c.SDL_KMOD_SHIFT else if (std.mem.eql(u8, m, "alt")) c.SDL_KMOD_ALT else if (std.mem.eql(u8, m, "ctrl")) c.SDL_KMOD_CTRL else return error.BadKey;
     @import("events.zig").keyDown(app, ev);
 }
 

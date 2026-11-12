@@ -31,10 +31,17 @@ const quatFromRows = gltf.quatFromRows;
 
 /// `.glb` of a game model: `textures` are the images of `mesh.textureNames(m)` in that
 /// order (null: missing, the material has no texture).
-pub fn exportGlb(gpa: Allocator, name: []const u8, m: mesh_fmt.Mesh, anims: []const anim.Animation, frames: anim.BoneFrames, textures: []const ?Image) ![]u8 {
+pub fn exportGlb(gpa: Allocator, name: []const u8, mesh: mesh_fmt.Mesh, anims: []const anim.Animation, frames: anim.BoneFrames, textures: []const ?Image) ![]u8 {
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     const a = arena_state.allocator();
+    // The bind pose is the joints; some of the game's are its exporter's garbage (specnaz
+    // bone 3: 7e28), which no float keeps a frame against: those are the origin.
+    var m = mesh;
+    m.joints = try a.dupe([3]f32, mesh.joints);
+    for (m.joints) |*j| if (!saneJoint(j.*)) {
+        j.* = .{ 0, 0, 0 };
+    };
     var b: Builder = .{ .a = a };
     const nb = m.joints.len;
 
@@ -192,6 +199,18 @@ pub fn exportGlb(gpa: Allocator, name: []const u8, m: mesh_fmt.Mesh, anims: []co
     doc.buffers = try a.dupe(Buffer, &.{.{ .byteLength = b.bin.items.len }});
     const json = try std.json.Stringify.valueAlloc(a, doc, .{ .emit_null_optional_fields = false });
     return glb(gpa, json, b.bin.items);
+}
+
+/// A joint a model's coordinates can hold (the game's models span tens of units).
+fn saneJoint(j: [3]f32) bool {
+    for (j) |x| if (!std.math.isFinite(x) or @abs(x) > 1e4) return false;
+    return true;
+}
+
+test "saneJoint" {
+    try std.testing.expect(saneJoint(.{ 4.2e-38, 0, -1.07 }));
+    try std.testing.expect(!saneJoint(.{ 6.998e28, 9.3e-9, 2.7e20 }));
+    try std.testing.expect(!saneJoint(.{ std.math.nan(f32), 0, 0 }));
 }
 
 fn exportAnimations(a: Allocator, b: *Builder, m: mesh_fmt.Mesh, anims: []const anim.Animation, frames: anim.BoneFrames) ![]const Animation {

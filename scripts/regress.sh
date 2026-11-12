@@ -1245,7 +1245,63 @@ EOF
   ok ogsave
 }
 
-ALL="boat medusa medusaload medusafirst matrixload sawtime bt ladder ladderclick labload sideline counterkill counterhand tranq scenewalk natohp natothreat recharge levelup shadowfloor badsave turncam aimclick barrelchain barrelexp barrelnovictim barrelfx decorpick radio strikewait decoy ballcharge toolsmoke sceneonce menublock medusafx morphfx booth roundtrip lift deps opening reopen staleinfo rules abilities testroom newchar testkit postchain ogedit scripted points phoenix events ogsview frames traitsdoc ogroundtrip ogplay pathscript reinforce convert convert-ui ogsave"
+# The code editor's probe (editor/codeprobe.zig) on the Classic game and the converted
+# project: the share of names Go to, the tip and completion know, per kind of name, may not
+# drop below scripts/code-probe.base (by more than 0.3), and opening a text stays under 5 ms
+# on average. CODEPROBE_UPDATE=1 writes the base again (after a gain).
+codeprobe() {
+  ogproject cpr || { fail codeprobe "convert failed: $(tail -1 "$TMP/cpr.convert")"; return; }
+  sdl_env
+  { OPENGORKY_MUTE=1 "$EDITOR_BIN" "$G" --code-probe "" >"$TMP/codeprobe.classic" 2>&1 &&
+    OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/cpr" --code-probe "src:" >"$TMP/codeprobe.og" 2>&1; } >"$TMP/codeprobe.log" 2>&1 ||
+    { fail codeprobe "editor failed"; return; }
+  # `<project> <kind> <def|tip|comp> <percent>` lines, and each project's average open.
+  for p in classic og; do
+    awk -v p=$p '/^SUMMARY [a-z]+ +names=/ { gsub(/= +/, "="); for (i = 3; i <= NF; i++) if ($i ~ /^(def|tip|comp)=/) { split($i, x, "="); sub(/%/, "", x[2]); print p, $2, x[1], x[2] } }' "$TMP/codeprobe.$p"
+  done >"$TMP/codeprobe.now"
+  if [ -n "$CODEPROBE_UPDATE" ]; then cp "$TMP/codeprobe.now" scripts/code-probe.base; ok "codeprobe (base written)"; return; fi
+  [ -s "$TMP/codeprobe.now" ] || { fail codeprobe "no SUMMARY lines"; return; }
+  drop=$(awk 'NR == FNR { b[$1" "$2" "$3] = $4; next } ($1" "$2" "$3) in b && $4 < b[$1" "$2" "$3] - 0.3 { printf "%s %s %s %s%% (was %s%%); ", $1, $2, $3, $4, b[$1" "$2" "$3] }' scripts/code-probe.base "$TMP/codeprobe.now")
+  [ -z "$drop" ] || { fail codeprobe "$drop"; return; }
+  for p in classic og; do
+    slow=$(awk '/^FILE / { for (i = 1; i <= NF; i++) if ($i ~ /^open=/) { sub(/open=/, "", $i); s += $i; n++ } } END { if (n && s / n > 5) printf "%.1f", s / n }' "$TMP/codeprobe.$p")
+    [ -z "$slow" ] || { fail codeprobe "$p: opening a text takes $slow ms on average"; return; }
+  done
+  ok codeprobe
+}
+
+# OpenGorky: a model added first (the tree's Models, --glb-new), saved into src/assets/;
+# a look then wears it and is put back: the old model untouched, the new one still packed.
+ogmodel() {
+  ogproject om || { fail ogmodel "convert failed: $(tail -1 "$TMP/om.convert")"; return; }
+  sdl_env
+  { OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --glb-export shotgun "$TMP/om.glb" &&
+    OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --glb-new "$TMP/om.glb" --save; } >"$TMP/ogmodel.log" 2>&1 || { fail ogmodel "editor failed: $(tail -1 "$TMP/ogmodel.log")"; return; }
+  m=$(ls "$TMP/om/src/assets/models/" 2>/dev/null | sed -n 's/\.msh$//p' | head -1)
+  [ -n "$m" ] || { fail ogmodel "no model in src/assets/models"; return; }
+  grep -q "\"$m\"" "$TMP"/om/src/looks/*.ogs && { fail ogmodel "a look wears $m before it is picked"; return; }
+  OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --og-set looks/squeaker.ogs mesh "\"$m\"" --save --show squeaker --shot "$TMP/ogmodel.png" >>"$TMP/ogmodel.log" 2>&1 &&
+    grep -q "mesh = \"$m\"" "$TMP/om/src/looks/squeaker.ogs" || { fail ogmodel "the look does not wear $m"; return; }
+  grep -q "model $m: " "$TMP/ogmodel.log" && { fail ogmodel "the saved $m is not found on reopening"; return; }
+  # …and in the game (its package's models over the installed game's).
+  OPENGORKY_MUTE=1 perl -e 'alarm 90; exec @ARGV' "$TOOL" play "$TMP/om" --start test-room:characters::squeaker --shot "$TMP/ogmodel_play.png" >"$TMP/ogmodel.play" 2>&1 || { fail ogmodel "play failed: $(tail -1 "$TMP/ogmodel.play")"; return; }
+  grep -q "model $m: " "$TMP/ogmodel.play" && { fail ogmodel "the game does not find $m: $(grep "model $m: " "$TMP/ogmodel.play" | head -1)"; return; }
+  OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --og-set looks/squeaker.ogs mesh '"squeaker"' --save >>"$TMP/ogmodel.log" 2>&1 &&
+    "$TOOL" build "$TMP/om" >>"$TMP/ogmodel.log" 2>&1 || { fail ogmodel "build failed: $(tail -1 "$TMP/ogmodel.log")"; return; }
+  grep -aq "src/assets/models/$m.msh" "$TMP/om/dist/"*.ogp || { fail ogmodel "$m not in the package"; return; }
+  # Unworn again: deleted from the project (its texture too); a game model is not.
+  OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --model-delete shotgun >>"$TMP/ogmodel.log" 2>&1 && { fail ogmodel "a game model was deleted"; return; }
+  OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --model-delete "$m" --save >>"$TMP/ogmodel.log" 2>&1 || { fail ogmodel "delete failed: $(tail -1 "$TMP/ogmodel.log")"; return; }
+  left=$(find "$TMP/om/src/assets" -type f -name "$m*" | head -1)
+  [ -z "$left" ] || { fail ogmodel "$left left after the delete"; return; }
+  # A fighter's model (its look's) out to glTF and back in: the look wears the new one.
+  { OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --glb-export squeaker "$TMP/om_sq.glb" &&
+    OPENGORKY_MUTE=1 "$EDITOR_BIN" "$TMP/om" --glb-import squeaker "$TMP/om_sq.glb" --save; } >>"$TMP/ogmodel.log" 2>&1 || { fail ogmodel "fighter glb failed: $(tail -1 "$TMP/ogmodel.log")"; return; }
+  grep -q 'mesh = "squeaker_[0-9]*"' "$TMP/om/src/looks/squeaker.ogs" || { fail ogmodel "the look does not wear the imported fighter model"; return; }
+  ok ogmodel
+}
+
+ALL="boat medusa medusaload medusafirst matrixload sawtime bt ladder ladderclick labload sideline counterkill counterhand tranq scenewalk natohp natothreat recharge levelup shadowfloor badsave turncam aimclick barrelchain barrelexp barrelnovictim barrelfx decorpick radio strikewait decoy ballcharge toolsmoke sceneonce menublock medusafx morphfx booth roundtrip lift deps opening reopen staleinfo rules abilities testroom newchar testkit postchain ogedit scripted points phoenix events ogsview frames traitsdoc ogroundtrip ogplay pathscript reinforce convert convert-ui ogsave codeprobe ogmodel"
 # (A scenario's function: its name with `_` for `-`.)
 [ $# -gt 0 ] && { for t in "$@"; do $(echo "$t" | tr - _); done; exit $FAILED; }
 # All scenarios: side by side ($JOBS, default the CPU count), each a run of this

@@ -36,7 +36,7 @@ pub const SafeView = struct {
     held: ?usize = null,
 
     pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir) !SafeView {
-        var as: og.loaders.assets.Stack = try .classic(io, gpa, dat);
+        var as: og.loaders.assets.Stack = try og.loaders.assetStack(io, gpa, dat);
         defer as.deinit();
         _ = try as.archiveOf("common/sprite.dat");
         _ = try as.archiveOf("common/other.dat");

@@ -934,6 +934,7 @@ pub const App = struct {
             .anim => if (self.doc) |d| @import("levelanims.zig").remove(self, d, n),
             .path => if (self.doc) |d| @import("paths.zig").remove(self, d, n),
             .effect_frame => @import("effectpage.zig").removeFrame(self, cf.index) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
+            .model => @import("look_pages.zig").deleteModel(self, n) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
             .purge => if (self.doc) |d| for (d.orphans(self.frame.allocator()) catch &.{}) |o| d.dropFiles(o) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
         }
     }

@@ -34,6 +34,10 @@ const og_history = ".og/history";
 /// `<file>#<block>/<inner>` is a block of that file (editor/model_og.zig): no text of its
 /// own, never written.
 pub const og_src = "src";
+/// The engine's own OG Script, read-only: `engine.ogs` (its traits and types, as the
+/// linker reads them: script/ogs/link.zig prelude) and `hosts.ogs` (the data blocks'
+/// fields). Shown by the code editor (Go to), never written.
+pub const engine_dir = "engine";
 /// An OpenGorky project's editor files (`.og/`: the test kit, beside `.og/history`) as an
 /// "archive" like `og_src`: in the project's folder, never built nor packed.
 pub const og_meta = ".og";
@@ -307,6 +311,14 @@ pub const Store = struct {
     }
 
     fn fileRead(self: *Store, path: []const u8, entry: []const u8) !usize {
+        if (std.mem.eql(u8, path, engine_dir)) {
+            const src = if (std.mem.eql(u8, entry, "engine.ogs")) og.script.traits.prelude else if (std.mem.eql(u8, entry, "hosts.ogs")) og.script.hosts.text else return error.NotFound;
+            const t = try self.gpa.dupe(u8, src);
+            errdefer self.gpa.free(t);
+            const i = try self.add(path, entry, t, null);
+            self.files.items[i].on_disk = true;
+            return i;
+        }
         if (std.mem.eql(u8, path, adjust_file)) {
             const raw = try self.dat.readFileAlloc(self.io, adjust_path, self.gpa, .limited(1 << 20));
             defer self.gpa.free(raw);
@@ -461,9 +473,50 @@ pub const Store = struct {
     fn listingNow(self: *Store, a: Allocator, path: []const u8, base: ?[]const archive.Entry, keep: ?*const fn ([]const u8) bool, sorted: bool) []const []const u8 {
         if (base) |b| return self.listingOver(a, path, b, keep, sorted);
         if (std.mem.eql(u8, path, og_src)) return self.listingOver(a, path, self.srcFiles(), keep, sorted);
-        var ar = archive.Archive.open(self.io, self.gpa, self.dat, path) catch return self.listingOver(a, path, @as([]const archive.Entry, &.{}), keep, sorted);
+        var names: std.ArrayList([]const u8) = .empty;
+        if (archive.Archive.open(self.io, self.gpa, self.dat, path)) |ar_| {
+            var ar = ar_;
+            defer ar.close(self.io, self.gpa);
+            for (ar.entries) |e| names.append(a, a.dupe(u8, e.name) catch continue) catch {};
+        } else |_| {}
+        // An OpenGorky project's own assets the game has none of (a model imported, saved).
+        const game = names.items.len;
+        for (self.ownEntries(a, path)) |n| {
+            for (names.items[0..game]) |x| {
+                if (std.ascii.eqlIgnoreCase(x, n)) break;
+            } else names.append(a, n) catch {};
+        }
+        return self.listingOver(a, path, names.items, keep, sorted);
+    }
+
+    /// Whether the installed game's archive `path` holds `entry` (a project's own asset it
+    /// does not is the project's alone).
+    pub fn inGame(self: *Store, path: []const u8, entry: []const u8) bool {
+        var ar = archive.Archive.open(self.io, self.gpa, self.dat, path) catch return false;
         defer ar.close(self.io, self.gpa);
-        return self.listingOver(a, path, ar.entries, keep, sorted);
+        for (ar.entries) |e| if (std.ascii.eqlIgnoreCase(e.name, entry)) return true;
+        return false;
+    }
+
+    /// The entries of archive `path` the project's `src/assets/` holds (loaders/assets.zig
+    /// toEntry: `models/x.msh` is `gfx_3d\x.msh` of common/other.dat); none without a project.
+    fn ownEntries(self: *Store, a: Allocator, path: []const u8) []const []const u8 {
+        const root = self.root orelse return &.{};
+        var dir = root.openDir(self.io, og_src ++ "/assets", .{ .iterate = true }) catch return &.{};
+        defer dir.close(self.io);
+        var walker = dir.walk(self.gpa) catch return &.{};
+        defer walker.deinit();
+        var out: std.ArrayList([]const u8) = .empty;
+        while (walker.next(self.io) catch null) |e| if (e.kind == .file) {
+            var lb: [og.loaders.assets.max_path]u8 = undefined;
+            const logical = lb[0..@min(lb.len, e.path.len)];
+            @memcpy(logical, e.path[0..logical.len]);
+            std.mem.replaceScalar(u8, logical, '\\', '/');
+            var bufs: [2][og.loaders.assets.max_path]u8 = undefined;
+            const en = og.loaders.assets.toEntry(&bufs, logical) orelse continue;
+            if (std.ascii.eqlIgnoreCase(en.archive, path)) out.append(a, a.dupe(u8, en.name) catch continue) catch {};
+        };
+        return out.items;
     }
 
     /// The `.ogs` files under the project's `src/` (not `src/assets/`), `/`-separated,

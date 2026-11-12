@@ -43,6 +43,8 @@ pub const Buffer = struct {
     changed: bool = false,
     /// Grows with every change (the code editor checks the text again).
     version: u32 = 0,
+    /// Shown, not edited (the engine's own texts, Store.engine_dir).
+    read_only: bool = false,
 
     const Snap = struct { text: []u8, cursor: usize };
 
@@ -64,6 +66,8 @@ pub const Buffer = struct {
     }
 
     fn snap(self: *Buffer, typing: bool) !void {
+        // Every change snaps first: a read-only text (the engine's) takes none.
+        if (self.read_only) return error.ReadOnly;
         if (typing and self.typing) return;
         self.typing = typing;
         try self.undo.append(self.gpa, .{ .text = try self.gpa.dupe(u8, self.text.items), .cursor = self.cursor });

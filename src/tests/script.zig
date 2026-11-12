@@ -394,7 +394,7 @@ test "OGS data blocks checked against the schema (core/schema.zig), sigils, erro
         .{ "level l { entry = 3; }", "entry: expected a point's name (\"capt_start\")" },
         .{ "fighter x { attach Nope(); }", "no component Nope" },
         .{ "look g { walk = [Speed(3.6)]; }", "walk: Speed: a struct takes named fields (f = v)" },
-        .{ "scene s { points = [Point(3.6)]; }", "Point: a record takes named fields (f = v)" },
+        .{ "scene s { points = [Point(3.6)]; }", "Point: a struct takes named fields (f = v)" },
         .{ "fn f() { return level::Load(~s\"door\"); }", "level::Load: argument 1 is a level, not a sound" },
         .{ "fn f() { return ~q\"x\"; }", "unknown sigil ~q" },
         .{ "fighter x { WALKTO(@a, \"p\"); }", "commands are in scene and dialog blocks only" },

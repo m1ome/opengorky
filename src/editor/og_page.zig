@@ -42,6 +42,14 @@ pub fn detail(app: *App, a: Allocator, idx: usize) void {
     entryStage(app, a, e, file);
     frame.props(app, "og_fields");
     sections(app, a, file, "og", e.name_id);
+    // Its model to and from glTF; a new one goes where the model is named (its look's: shared).
+    if (meshOf(app, file)) |m| if (gui.block(app, "og_glb", tx.get(tx.c_model), .{})) {
+        if (meshHolder(app, file) != file) gui.note(tx.get(tx.og_glb_look_note));
+        const em = @import("entry_model.zig");
+        if (gui.footer(app, "og_glb_foot", &.{ tx.get(tx.b_glb_in), tx.get(tx.b_glb_out) }, null)) |k|
+            app.askFile(if (k == 0) .{ .kind = .glb, .run = em.onGlbIn, .entry = idx } else .{ .kind = .glb_out, .run = em.onGlbOut, .entry = idx, .name = m });
+        gui.blockEnd();
+    };
     // Its icons of the game's windows: an enemy's in the after-battle report (its
     // `report_icon`), a weapon's in the skills window (`skill_icon`).
     if (e.kind == .enemy or e.kind == .weapon) if (gui.block(app, "og_icons", tx.get(tx.og_icons), .{})) {
@@ -197,10 +205,17 @@ pub fn sections(app: *App, a: Allocator, file: usize, key: []const u8, name_id: 
 }
 
 /// The model of block file `file`: its `mesh` (a weapon's, an item's), else its look's.
-fn meshOf(app: *App, file: usize) ?[]const u8 {
-    if (model.textStr(app, app.store.text(file), "mesh")) |m| return m;
-    const t = @import("entry_model.zig").lookText(app, file) orelse return null;
-    return model.textStr(app, t, "mesh");
+pub fn meshOf(app: *App, file: usize) ?[]const u8 {
+    return model.textStr(app, app.store.text(meshHolder(app, file) orelse return null), "mesh");
+}
+
+/// The file whose `mesh` is block file `file`'s model: its own, else its look's (shared).
+pub fn meshHolder(app: *App, file: usize) ?usize {
+    if (model.textStr(app, app.store.text(file), "mesh") != null) return file;
+    const v = model.field(app, file, "look").og_expr orelse return null;
+    if (v.kind != .word) return null;
+    const lf = model_og.archetypeFile(app, v.kind.word) orelse return null;
+    return if (model.textStr(app, app.store.text(lf), "mesh") != null) lf else null;
 }
 
 /// The catalog entry of archetype `class` (`weapons::pistol`); null: none.

@@ -175,7 +175,8 @@ pub fn follow(app: *App, t: Target) void {
         .entry => |i| entries.showEntry(app, i),
         .code => |c| {
             const f = app.store.file(c.archive, c.entry) catch |err| return app.setStatus(tx.st_open_failed, .{ c.entry, err });
-            doctabs.keepCurrent(app);
+            // The shown tab kept, unless a code jump opened it (codehist).
+            if (!@import("codehist.zig").onJumped(app)) doctabs.keepCurrent(app);
             doctabs.showCode(app, f, c.at);
         },
         .doc => |d| doctabs.show(app, d.tab, d.name),

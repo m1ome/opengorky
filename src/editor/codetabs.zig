@@ -33,6 +33,7 @@ pub fn open(app: *App, file: usize, at: ?usize) void {
     defer app.gpa.free(utf8);
     const v = app.gpa.create(View) catch return;
     v.* = .{ .buf = code.Buffer.init(app.gpa, utf8) catch return app.gpa.destroy(v), .file = file, .title = app.gpa.dupe(u8, app.store.files.items[file].entry) catch "", .store_hash = std.hash.Wyhash.hash(0, bytes) };
+    v.buf.read_only = std.mem.eql(u8, app.store.files.items[file].archive, @import("store.zig").engine_dir);
     app.code = v;
     if (at) |g| moveTo(app, v, g);
 }
@@ -77,7 +78,8 @@ pub fn setView(app: *App, v: *View, ogs: bool) void {
 /// Store file `file` is an OpenGorky one (OGS: rules\*.ss, the hooks, abilities, in
 /// common/rules.dat): UTF-8, not the edition's bytes (the game's scripts).
 pub fn isUtf8(app: *const App, file: usize) bool {
-    return std.mem.eql(u8, app.store.files.items[file].archive, @import("store.zig").og_src);
+    const ar = app.store.files.items[file].archive;
+    return std.mem.eql(u8, ar, @import("store.zig").og_src) or std.mem.eql(u8, ar, @import("store.zig").engine_dir);
 }
 
 /// The cursor to byte `g` of the game text (its line: UTF-8 and game text count lines alike).
@@ -85,8 +87,12 @@ fn moveTo(app: *App, v: *View, g: usize) void {
     const bytes = app.store.text(v.file);
     var line: usize = 0;
     for (bytes[0..@min(g, bytes.len)]) |ch| line += @intFromBool(ch == '\n');
-    v.buf.cursor = code.lineOffset(v.buf.str(), line + 1);
-    v.scroll = line -| 4;
+    // A UTF-8 text is the buffer byte for byte: the very place; a game text's line.
+    v.buf.cursor = if (isUtf8(app, v.file) and std.mem.eql(u8, bytes, v.buf.str())) @min(g, bytes.len) else code.lineOffset(v.buf.str(), line + 1);
+    v.buf.anchor = null;
+    // The line in the middle of the view (not drawn yet: as the editor's usual height).
+    const vis: usize = if (v.rect.h > 0) @import("codedraw.zig").visibleLines(v) else 30;
+    v.scroll = line -| vis / 2;
     v.follow_x = true;
 }
 

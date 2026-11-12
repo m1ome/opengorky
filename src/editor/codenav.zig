@@ -20,7 +20,7 @@ const App = app_mod.App;
 pub const Hit = struct { label: []const u8, to: info.Target };
 
 /// A game file: its archive and entry.
-const File = struct { archive: []const u8, entry: []const u8 };
+pub const File = struct { archive: []const u8, entry: []const u8 };
 
 /// Every archive's entries and the models of the catalog's entries (lower-case mesh
 /// name → entry index), read again after a Store or catalog change (Store.rev, Catalog.gen).
@@ -78,6 +78,17 @@ fn index(app: *App) void {
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         gop.value_ptr.append(a, i) catch {};
     }
+}
+
+/// Every script and rules file of the game, as edited (the code probe).
+pub fn texts(app: *App, a: Allocator) []const File {
+    index(app);
+    var out: std.ArrayList(File) = .empty;
+    if (app.ogLayout()) for (app.store.listing(a, @import("store.zig").og_src, null, true)) |p| {
+        if (std.ascii.endsWithIgnoreCase(p, ".ogs")) out.append(a, .{ .archive = @import("store.zig").og_src, .entry = p }) catch {};
+    };
+    for (index_files) |f| if (text(f.entry)) out.append(a, f) catch {};
+    return out.items;
 }
 
 /// Base names of the game's files under folder `dir` (`classes\\`, "" for any) ending in
@@ -302,10 +313,12 @@ pub fn resolvable(app: *App, tok: []const u8) bool {
 /// Hit `h` opened; a file without a page: where it is, on the status bar.
 pub fn go(app: *App, h: Hit) void {
     if (h.to == .none) return app.setStatus(tx.st_goto_file, .{h.label});
-    // The target opens in a tab of its own: the code stays in its tab.
-    @import("doctabs.zig").keepCurrent(app);
+    // The target opens in a tab (the code kept in its own, unless a jump opened it).
+    const hist = @import("codehist.zig");
+    hist.leave(app);
     info.follow(app, h.to);
     app.followLink();
+    hist.arrived(app);
 }
 
 /// A use of a word: where (its line's text, trimmed).
@@ -322,39 +335,57 @@ fn scriptOrRules(name: []const u8) bool {
 }
 
 /// Every whole-word use of `w` (case aside) in the game's scripts, scenes and rules files,
-/// as edited; the first `uses_max`.
-pub fn findUses(app: *App, w: []const u8) void {
+/// as edited; the first `uses_max`. A name an OpenGorky project declares (at offset `i`
+/// of `v`): only the uses naming that declaration (codesym.sameDecl), not its namesakes.
+pub fn findUses(app: *App, w: []const u8, v: *const code.View, i: usize) void {
     _ = uses_arena.reset(.retain_capacity);
     const a = uses_arena.allocator();
     uses_word = a.dupe(u8, w) catch "";
-    uses = collect(app, a, w, uses_max);
+    // shortcut: namesakes past 20000 text uses are not looked at, raise it if a project gets there.
+    const all = collect(app, a, w, 20000);
+    const kept = @import("codesym.zig").sameDecl(app, v, a, i, all) orelse all;
+    uses = kept[0..@min(kept.len, uses_max)];
 }
 
 /// The first `max` whole-word uses of `w` (findUses; the Reference's examples).
 pub fn collect(app: *App, a: Allocator, w: []const u8, max: usize) []const Use {
     var out: std.ArrayList(Use) = .empty;
     if (w.len == 0) return &.{};
-    const paths = og.formats.archive.listArchives(app.io, app.gpa, app.dat) catch return &.{};
+    // An OpenGorky project's own code first (`src/`, as edited).
+    const og_src = @import("store.zig").og_src;
+    if (app.ogLayout()) for (app.store.listing(a, og_src, null, true)) |e| {
+        if (!std.ascii.endsWithIgnoreCase(e, ".ogs")) continue;
+        const i = app.store.file(og_src, e) catch continue;
+        if (!usesIn(a, &out, og_src, e, app.store.text(i), w, max)) return out.items;
+    };
+    const paths = og.formats.archive.listArchives(app.io, app.gpa, app.dat) catch return out.items;
     defer og.formats.archive.freeList(app.gpa, paths);
     var tmp: std.heap.ArenaAllocator = .init(app.gpa);
     defer tmp.deinit();
     for (paths) |p| for (refs_mod.files(app, tmp.allocator(), p, scriptOrRules)) |f| {
-        var it = code.wordUses(f.text, w);
-        while (it.next()) |at| {
-            if (out.items.len == max) return out.items;
-            const ls = std.mem.lastIndexOfScalar(u8, f.text[0..at], '\n');
-            const le = std.mem.indexOfScalarPos(u8, f.text, at, '\n') orelse f.text.len;
-            const line = std.mem.trim(u8, f.text[if (ls) |k| k + 1 else 0..le], " \t\r");
-            out.append(a, .{
-                .archive = a.dupe(u8, p) catch return out.items,
-                .entry = a.dupe(u8, f.name) catch return out.items,
-                .at = at,
-                .line = @intCast(std.mem.count(u8, f.text[0..at], "\n") + 1),
-                .text = a.dupe(u8, line[0..@min(line.len, 160)]) catch return out.items,
-            }) catch return out.items;
-        }
+        if (!usesIn(a, &out, p, f.name, f.text, w, max)) return out.items;
     };
     return out.items;
+}
+
+/// The whole-word uses of `w` in `text` (entry `entry` of `archive`) onto `out`; false
+/// once it holds `max`.
+fn usesIn(a: Allocator, out: *std.ArrayList(Use), archive: []const u8, entry: []const u8, src: []const u8, w: []const u8, max: usize) bool {
+    var it = code.wordUses(src, w);
+    while (it.next()) |at| {
+        if (out.items.len == max) return false;
+        const ls = std.mem.lastIndexOfScalar(u8, src[0..at], '\n');
+        const le = std.mem.indexOfScalarPos(u8, src, at, '\n') orelse src.len;
+        const line = std.mem.trim(u8, src[if (ls) |k| k + 1 else 0..le], " \t\r");
+        out.append(a, .{
+            .archive = a.dupe(u8, archive) catch return false,
+            .entry = a.dupe(u8, entry) catch return false,
+            .at = at,
+            .line = @intCast(std.mem.count(u8, src[0..at], "\n") + 1),
+            .text = a.dupe(u8, line[0..@min(line.len, 160)]) catch return false,
+        }) catch return false;
+    }
+    return true;
 }
 
 /// What value `value` of rules field `f` (rulesapi.zig) means here: its word's meaning,

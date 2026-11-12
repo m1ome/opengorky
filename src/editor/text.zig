@@ -461,6 +461,13 @@ pub const look_new_note: Msg = .{ .en = "A copy of the model wearing a PNG, or a
 pub const b_new_texture_of: Msg = .{ .en = "New {s} from PNG…", .ru = "Новая {s} из PNG…" };
 pub const st_glb_out: Msg = .{ .en = "Model written to {s} (textures, skeleton, animations, attach points)", .ru = "Модель записана в {s} (текстуры, скелет, анимации, точки крепления)" };
 pub const st_glb_in: Msg = .{ .en = "New model {s} from the .glb ({d} textures); the entry uses it; saved with Ctrl+S", .ru = "Новая модель {s} из .glb (текстур: {d}); запись использует её; сохраняется по Ctrl+S" };
+pub const st_glb_new: Msg = .{ .en = "New model {s} from the .glb ({d} textures); nothing wears it yet: pick it as a look's or weapon's Model; saved with Ctrl+S", .ru = "Новая модель {s} из .glb (текстур: {d}); пока никем не используется: выберите её в поле «Модель» внешности или оружия; сохраняется по Ctrl+S" };
+pub const mdl_import_new: Msg = .{ .en = "Import a model (.glb)…", .ru = "Импорт модели (.glb)…" };
+pub const mdl_own: Msg = .{ .en = "project", .ru = "проект" };
+pub const mdl_own_unused: Msg = .{ .en = "project · not used", .ru = "проект · не используется" };
+pub const mdl_delete: Msg = .{ .en = "Delete from the project", .ru = "Удалить из проекта" };
+pub const mdl_delete_note: Msg = .{ .en = "The project's own model and nothing wears it: deleting takes its files and the textures only it has out of src/assets/ on save (Ctrl+Z brings it back).", .ru = "Своя модель проекта, никто её не носит: удаление убирает её файлы и текстуры, которые есть только у неё, из src/assets/ при сохранении (Ctrl+Z вернёт)." };
+pub const st_mdl_deleted: Msg = .{ .en = "Model {s} deleted from the project ({d} files); src/assets/ loses them on save, Ctrl+Z brings it back", .ru = "Модель {s} удалена из проекта (файлов: {d}); из src/assets/ они уйдут при сохранении, Ctrl+Z вернёт" };
 pub const st_glb_fit: Msg = .{ .en = "New model {s} from the .glb ({d} textures); it had no height: {d} makes it as large as the old model (Model height); the entry uses it; saved with Ctrl+S", .ru = "Новая модель {s} из .glb (текстур: {d}); высоты в нём не было: {d} делает её размером со старую модель (Высота модели); запись использует её; сохраняется по Ctrl+S" };
 pub const st_anims_in: Msg = .{ .en = "{s}: added {d} ({s}), replaced {d} ({s}); saved with Ctrl+S", .ru = "{s}: добавлено {d} ({s}), заменено {d} ({s}); сохраняется по Ctrl+S" };
 pub const st_glb_failed: Msg = .{ .en = "cannot import the .glb: {s} ({t})", .ru = "не удалось импортировать .glb: {s} ({t})" };
@@ -708,6 +715,7 @@ pub const ai_eval: Msg = .{ .en = "Scoring", .ru = "Оценка" };
 pub const og_icons: Msg = .{ .en = "Icons", .ru = "Иконки" };
 pub const og_code: Msg = .{ .en = "Code", .ru = "Код" };
 pub const og_model: Msg = .{ .en = "Model: {s}", .ru = "Модель: {s}" };
+pub const og_glb_look_note: Msg = .{ .en = "The model is its look's: an imported one goes into the look, so every character wearing it changes", .ru = "Модель задана во внешности: импортированная встанет туда же и сменится у всех персонажей с этой внешностью" };
 pub const og_strikes: Msg = .{ .en = "Strikes with", .ru = "Бьёт оружием" };
 pub const og_any_weapon: Msg = .{ .en = "any other weapon", .ru = "любое другое оружие" };
 pub const ai_generic: Msg = .{ .en = "For a generic fighter's ai", .ru = "Для ai общего бойца" };
@@ -1526,6 +1534,8 @@ pub const code_bad_args: Msg = .{ .en = "line {d}: {s}() — too few arguments (
 pub const code_missing: Msg = .{ .en = "line {d}: \"{s}\" — no such file in the game's archives", .ru = "строка {d}: \"{s}\" — такого файла нет в архивах игры" };
 pub const code_rules_row: Msg = .{ .en = "{s}(…) row: its page", .ru = "Строка {s}(…): её страница" };
 pub const st_rules_call: Msg = .{ .en = "{s}: {s}", .ru = "{s}: {s}" };
+pub const st_hist_back: Msg = .{ .en = "No place to go back to", .ru = "Назад вернуться некуда" };
+pub const st_hist_forward: Msg = .{ .en = "No place to go forward to", .ru = "Вперёд идти некуда" };
 pub const st_goto_none: Msg = .{ .en = "Nothing named \"{s}\" found", .ru = "Ничего с именем \"{s}\" не найдено" };
 pub const st_goto_file: Msg = .{ .en = "{s}: the editor has no page for this file", .ru = "{s}: для этого файла в редакторе нет страницы" };
 pub const code_t_rules: Msg = .{ .en = "rules call (a table's row)", .ru = "вызов правил (строка таблицы)" };
@@ -1917,6 +1927,14 @@ pub const prelude = [_]struct { key: []const u8, msg: Msg }{
     .{ .key = "PathPoint.y", .msg = .{ .en = "Y", .ru = "Y" } },
     .{ .key = "PathPoint.angle", .msg = .{ .en = "Angle, rad", .ru = "Угол, рад" } },
     .{ .key = "PathPoint.z", .msg = .{ .en = "Height", .ru = "Высота" } },
+    .{ .key = "Line.who", .msg = .{ .en = "Speaker", .ru = "Кто говорит" } },
+    .{ .key = "Line.text", .msg = .{ .en = "Text", .ru = "Текст" } },
+    .{ .key = "Line.voice", .msg = .{ .en = "Voice (~s\"…\")", .ru = "Голос (~s\"…\")" } },
+    .{ .key = "Line.cam", .msg = .{ .en = "Camera at, x and y", .ru = "Камера: x и y" } },
+    .{ .key = "Point.name", .msg = .{ .en = "Name", .ru = "Имя" } },
+    .{ .key = "Point.x", .msg = .{ .en = "X", .ru = "X" } },
+    .{ .key = "Point.y", .msg = .{ .en = "Y", .ru = "Y" } },
+    .{ .key = "Point.angle", .msg = .{ .en = "Angle, rad", .ru = "Угол, рад" } },
     .{ .key = "WeaponKind.none", .msg = .{ .en = "None", .ru = "Нет" } },
     .{ .key = "WeaponKind.fire", .msg = .{ .en = "Fire", .ru = "Огонь" } },
     .{ .key = "WeaponKind.freeze", .msg = .{ .en = "Cold", .ru = "Холод" } },
@@ -1998,6 +2016,8 @@ pub const prelude_types = [_]struct { key: []const u8, msg: Msg }{
     .{ .key = "Side", .msg = .{ .en = "Side", .ru = "Сторона" } },
     .{ .key = "Place", .msg = .{ .en = "Place", .ru = "Место" } },
     .{ .key = "PathPoint", .msg = .{ .en = "Path point", .ru = "Точка пути" } },
+    .{ .key = "Line", .msg = .{ .en = "Dialog line", .ru = "Реплика" } },
+    .{ .key = "Point", .msg = .{ .en = "Scene point", .ru = "Точка сцены" } },
     .{ .key = "Camera", .msg = .{ .en = "Camera", .ru = "Камера" } },
     .{ .key = "Speed", .msg = .{ .en = "Walk speed", .ru = "Скорость ходьбы" } },
     .{ .key = "Idle", .msg = .{ .en = "Idle", .ru = "Ожидание" } },

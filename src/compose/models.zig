@@ -40,7 +40,7 @@ pub const Files = struct {
     pub fn open(io: Io, gpa: Allocator, dat: Io.Dir) !*Files {
         const f = try gpa.create(Files);
         errdefer gpa.destroy(f);
-        f.* = .{ .io = io, .gpa = gpa, .assets = try .classic(io, gpa, dat) };
+        f.* = .{ .io = io, .gpa = gpa, .assets = try @import("../loaders.zig").assetStack(io, gpa, dat) };
         errdefer f.assets.deinit();
         // No other.dat, no models (as before the stack).
         _ = try f.assets.archiveOf("common/other.dat");

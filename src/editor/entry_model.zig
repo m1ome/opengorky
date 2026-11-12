@@ -476,8 +476,12 @@ pub fn onGlbIn(app: *App, ask: app_mod.FileAsk, path: []const u8) !void {
     const file = fileOf(app, e) orelse return;
     const text = app.store.text(file);
     const r = art.importGlb(app, entries.meshOf(app, e, text) orelse return error.NoModel, path, app.importTarget()) catch |err| return glbFailed(app, err);
-    // As a new look: an enemy through a copy of its act_*.ss, the rest by meshFile.
-    if (e.kind == .enemy) try entries.setAct(app, file, try art.newAct(app, actOf(text) orelse return error.NoLook, r.name)) else try entries.setString(app, file, "mesh", r.name);
+    // As a new look: an enemy through a copy of its act_*.ss, the rest by meshFile; an
+    // OpenGorky block where its model is named (its own `mesh`, else its look's).
+    if (app.ogLayout()) {
+        var buf: [64]u8 = undefined;
+        try model.model_og.set(app, @import("og_page.zig").meshHolder(app, file) orelse return error.NoModel, &.{"mesh"}, try std.fmt.bufPrint(&buf, "\"{s}\"", .{r.name}));
+    } else if (e.kind == .enemy) try entries.setAct(app, file, try art.newAct(app, actOf(text) orelse return error.NoLook, r.name)) else try entries.setString(app, file, "mesh", r.name);
     if (r.fitted > 0) app.setStatusPort(tx.st_glb_fit, .{ r.name, r.textures, r.fitted }, tx.st_og_art) else app.setStatusPort(tx.st_glb_in, .{ r.name, r.textures }, tx.st_og_art);
 }
 pub fn onAnimsIn(app: *App, ask: app_mod.FileAsk, path: []const u8) !void {
@@ -509,7 +513,7 @@ const glb_errors = [_]struct { []const u8, tx.Msg }{
 /// The exe's limits a Classic project keeps (mesh.checkLimits `.both`, tex3df sizes).
 const exe_limits = [_][]const u8{ "TooManyVertices", "TooManyTriangles", "NameTooLong", "StringTooLong", "BadTriangle", "BadSize" };
 
-fn glbFailed(app: *App, err: anyerror) void {
+pub fn glbFailed(app: *App, err: anyerror) void {
     const why = for (glb_errors) |ge| {
         if (std.mem.eql(u8, ge[0], @errorName(err))) break ge[1];
     } else tx.glb_other;

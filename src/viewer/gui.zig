@@ -193,7 +193,7 @@ pub const Gui = struct {
     assets: Assets,
 
     pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir) !Gui {
-        var g: Gui = .{ .gpa = gpa, .io = io, .renderer = r, .assets = try .classic(io, gpa, dat) };
+        var g: Gui = .{ .gpa = gpa, .io = io, .renderer = r, .assets = try og.loaders.assetStack(io, gpa, dat) };
         errdefer g.deinit();
         _ = try g.assets.archiveOf("common/sprite.dat");
         const as = &g.assets;

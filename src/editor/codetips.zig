@@ -112,11 +112,46 @@ fn tipLines(app: *App, v: *View, a: Allocator, t: []const u8, i: usize, tok: cod
         const d = if (da) |x| declOf(app, v, a, x.name, true) else declOf(app, v, a, w, false);
         if (d) |x| declTips(a, .{ .name = x.name, .params = x.params, .cur = if (da) |y| y.arg else null, .desc = x.desc, .notes = x.notes }, &lines);
     }
-    if (lines.items.len == 0 or tok.string) for (codenav.resolve(app, a, w, false), 0..) |h, k| {
+    // A project declaration (codesym): its line and the `///` lines above it.
+    if (lines.items.len == 0) for (@import("codesym.zig").defsAt(app, v, a, i), 0..) |d, k| {
+        if (k == 3) break;
+        symTip(app, v, a, d, &lines);
+    };
+    if (lines.items.len == 0 or (tok.string and lines.items.len == before)) for (codenav.resolve(app, a, w, false), 0..) |h, k| {
         if (k == 6) break;
         lines.append(a, .{ .s = std.fmt.allocPrint(a, "→ {s}", .{h.label}) catch "", .col = lay.canvas.code.string }) catch {};
     };
     return lines.items;
+}
+
+/// Declaration `d`'s tip: its line (to the body's `{`), its doc lines, where it is.
+fn symTip(app: *App, v: *View, a: Allocator, d: @import("codesym.zig").Def, lines: *std.ArrayList(Tip)) void {
+    const own = app.store.files.items[v.file];
+    const text = if (std.mem.eql(u8, d.archive, own.archive) and std.ascii.eqlIgnoreCase(d.entry, own.entry)) v.buf.str() else app.store.text(app.store.file(d.archive, d.entry) catch return);
+    if (d.at > text.len) return;
+    const ls = code.lineStart(text, d.at);
+    const line = std.mem.trim(u8, text[ls..code.lineEnd(text, ls)], " \t{");
+    lines.append(a, .{ .s = line, .col = lay.canvas.code.string }) catch {};
+    // The `///` lines right above, in order.
+    var docs: std.ArrayList([]const u8) = .empty;
+    var p = ls;
+    while (p > 0) {
+        const ps = code.lineStart(text, p - 1);
+        const l = std.mem.trim(u8, text[ps .. p - 1], " \t\r");
+        if (!std.mem.startsWith(u8, l, "///")) break;
+        docs.append(a, std.mem.trim(u8, l[3..], " ")) catch {};
+        p = ps;
+    }
+    var k = docs.items.len;
+    while (k > 0) : (k -= 1) lines.append(a, .{ .s = docs.items[k - 1], .col = lay.canvas.code.tip_desc }) catch {};
+    lines.append(a, .{ .s = d.label, .col = lay.canvas.code.tip_desc }) catch {};
+}
+
+/// The hover tip's lines for offset `i` (hoverTip draws them; the code probe counts them).
+pub fn tipsAt(app: *App, v: *View, a: Allocator, i: usize) []const Tip {
+    const t = v.buf.str();
+    const tok = qualified(t, code.tokenAt(t, i) orelse return &.{});
+    return tipLines(app, v, a, t, i, tok, t[tok.start..tok.end]);
 }
 
 pub const Tip = struct { s: []const u8, col: [4]u8 };

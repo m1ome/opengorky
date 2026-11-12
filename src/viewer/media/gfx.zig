@@ -244,6 +244,20 @@ pub const Frames = struct {
         self.sizes.appendAssumeCapacity(.{ img.width, img.height });
     }
 
+    /// `draw` at 1/`k` of the frame's size (a high-resolution background).
+    pub fn drawScaled(self: Frames, r: *c.SDL_Renderer, frame: usize, x: f32, y: f32, k: u32) SdlError!void {
+        if (k <= 1) return self.draw(r, frame, x, y);
+        const size = self.sizes.items[frame];
+        const f: f32 = @floatFromInt(k);
+        const dst: c.SDL_FRect = .{ .x = x, .y = y, .w = @as(f32, @floatFromInt(size[0])) / f, .h = @as(f32, @floatFromInt(size[1])) / f };
+        try check(c.SDL_RenderTexture(r, self.textures.items[frame], null, &dst));
+    }
+
+    /// Every frame filtered linearly when drawn at another size.
+    pub fn smoothScaling(self: Frames) void {
+        for (self.textures.items) |t| _ = c.SDL_SetTextureScaleMode(t, c.SDL_SCALEMODE_LINEAR);
+    }
+
     pub fn draw(self: Frames, r: *c.SDL_Renderer, frame: usize, x: f32, y: f32) SdlError!void {
         const size = self.sizes.items[frame];
         const dst: c.SDL_FRect = .{ .x = x, .y = y, .w = @floatFromInt(size[0]), .h = @floatFromInt(size[1]) };

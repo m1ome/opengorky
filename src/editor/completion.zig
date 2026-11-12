@@ -34,7 +34,7 @@ pub const Where = struct {
 /// animations of `actor`'s look (none: of the text's own); `files` the project's source
 /// paths (`weapons/pistol.ogs`); `name_ids` the catalog's `id · title`; `weapon_classes`
 /// the classTypes' `n · name`; `calls` the catalog's call examples' names.
-pub const Names = enum { levels, scenes, areas, actors, objects, level_names, sounds, dialogs, videos, meshes, classes, anims, functions, files, name_ids, weapon_classes, calls, components };
+pub const Names = enum { levels, scenes, areas, actors, objects, level_names, sounds, dialogs, videos, meshes, classes, anims, functions, files, name_ids, weapon_classes, calls, components, program };
 
 /// Where the project's names come from.
 pub const Source = struct {
@@ -253,6 +253,8 @@ pub fn candidates(a: Allocator, t: []const u8, i: usize, show_tasks: bool, where
         words.appendSlice(a, &code.ogs_keywords) catch {};
         for (og.script.traits.events()) |e| words.append(a, e.name) catch {};
         words.appendSlice(a, src.names(a, .components)) catch {};
+        // The project's declarations (codesym.names): `ns::` paths, its enums, structs, blocks.
+        words.appendSlice(a, src.names(a, .program)) catch {};
     } else words.appendSlice(a, &.{ "function", "if", "else", "while", "return", "int", "float", "string" }) catch {};
     words.appendSlice(a, code.identifiers(a, t) catch &.{}) catch {};
     return code.matches(a, prefix, words.items, 10) catch &.{};

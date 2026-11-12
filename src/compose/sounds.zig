@@ -25,7 +25,7 @@ const archive_of = [_][]const u8{ "common/sound.dat", "common/voice.dat" };
 
 /// The core's sound bank over `dat`'s sounds (its deinit closes them).
 pub fn open(io: Io, gpa: Allocator, dat: Io.Dir) !sound.Bank {
-    var s: assets.Stack = try .classic(io, gpa, dat);
+    var s: assets.Stack = try @import("../loaders.zig").assetStack(io, gpa, dat);
     errdefer s.deinit();
     // Both archives or no bank (as before the stack).
     for (archive_of) |p| _ = try s.archiveOf(p);

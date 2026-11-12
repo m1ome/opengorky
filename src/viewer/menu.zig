@@ -158,7 +158,7 @@ pub const Menu = struct {
     pub fn load(io: Io, gpa: Allocator, r: *c.SDL_Renderer, dat: Io.Dir) !Menu {
         var m: Menu = .{ .gpa = gpa, .io = io, .renderer = r, .text = try Image.init(gpa, 640, 480), .modes = .init() };
         errdefer m.deinit();
-        m.assets = try .classic(io, gpa, dat);
+        m.assets = try og.loaders.assetStack(io, gpa, dat);
         const other = &m.assets.?;
         _ = try other.archiveOf("common/sprite.dat");
         _ = try other.archiveOf("common/other.dat");

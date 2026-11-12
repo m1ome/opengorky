@@ -111,6 +111,24 @@ struct PathPoint {
     int z = 0 "Height";
 }
 
+// A dialog's line (`dialog "…" { Line(…); }`): who says it, the text, its voice, where
+// the camera looks meanwhile. A row: read by the loader, not made as a value.
+struct Line {
+    any who = nil "Speaker";
+    string text = "" "Text";
+    any voice = nil "Voice (~s\"…\")";
+    list<int> cam = nil "Camera at, x and y";
+}
+
+// A named point of a scene (`scene "…" { points = [Point(…), …]; }`): the background
+// x, y its commands name it by, the angle an actor standing there faces (radians).
+struct Point {
+    string name = "" "Name";
+    float x = 0.0 "X";
+    float y = 0.0 "Y";
+    float angle = 0.0 "Angle, rad";
+}
+
 // The level's camera (initCamera()'s fields): those given are set.
 struct Camera {
     bool perspective = false "Perspective";

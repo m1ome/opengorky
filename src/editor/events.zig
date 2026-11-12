@@ -121,6 +121,9 @@ pub fn buttonDown(app: *App, b: c.SDL_MouseButtonEvent) void {
             e.painting = true;
             sprview.pointer(e, app.mouse, false);
         };
+    } else if (b.button == c.SDL_BUTTON_X1 or b.button == c.SDL_BUTTON_X2) {
+        // The mouse's side buttons: Back and Forward through the code's jumps.
+        _ = @import("codehist.zig").step(app, b.button == c.SDL_BUTTON_X2);
     } else if (b.button == c.SDL_BUTTON_RIGHT and app.code != null and codeview.over(app.code.?, app.mouse)) {
         codeview.openMenu(app, app.code.?);
     } else if (app.sprShown()) |e| {

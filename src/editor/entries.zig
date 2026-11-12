@@ -39,6 +39,7 @@ pub const ownPortraits = entry_copy.ownPortraits;
 
 /// Model of an entry: an item's `meshFile`, an enemy's through its look.
 pub fn meshOf(app: *App, e: Entry, text: []const u8) ?[]const u8 {
+    if (app.ogLayout()) return @import("og_page.zig").meshOf(app, fileOf(app, e) orelse return null);
     if (e.kind == .hero) return model.getStr(lookOf(app, text), "mesh");
     if (e.kind != .enemy) return model.getStr(text, "mesh");
     var buf: [128]u8 = undefined;
@@ -92,7 +93,14 @@ pub fn onTextureIn(app: *App, ask: app_mod.FileAsk, path: []const u8) !void {
 /// Unsaved common/other.dat files for the model preview.
 pub fn overlayGet(ctx: *anyopaque, name: []const u8) ?[]const u8 {
     const app: *App = @ptrCast(@alignCast(ctx));
-    const i = app.store.find(common_archive, name) orelse return null;
+    const i = app.store.find(common_archive, name) orelse own: {
+        // OpenGorky: a file of the project's own src/assets/ the game has none of (a model
+        // imported and saved) — not read into the Store until asked.
+        var b: [512]u8 = undefined;
+        const sub = @import("store.zig").ownAsset(&b, app.store.root, common_archive, name) orelse return null;
+        _ = app.store.root.?.statFile(app.io, sub, .{}) catch return null;
+        break :own app.store.file(common_archive, name) catch return null;
+    };
     return app.store.text(i);
 }
 /// Where a missing value goes: class `.ss` files are included into init() whole, item

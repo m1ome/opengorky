@@ -732,8 +732,8 @@ fn openLevel(_: ?*anyopaque, gpa: Allocator, name: []const u8) anyerror!core.sou
     };
 }
 
-/// The open project's own assets (its folder or its package).
-fn ownAssets() ?assets.Stack.Own {
+/// The open project's own assets (its folder or its package); null: no OG project open.
+pub fn ownAssets() ?assets.Stack.Own {
     const p = if (project) |*x| x else return null;
     if (p.pkg) |*k| return .{ .package = k };
     if (p.own_dir == null) if (p.src_dir) |sd| {

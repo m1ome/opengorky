@@ -33,7 +33,7 @@ pub const ScenePreview = struct {
 /// A deletion asked about first (the confirmation window): what, on which object; or
 /// the project's conversion to OpenGorky.
 pub const Confirm = struct {
-    what: enum { object, box, hero, area, point, light, frame, voice, purge, text_row, anim, path, effect_frame },
+    what: enum { object, box, hero, area, point, light, frame, voice, purge, text_row, anim, path, effect_frame, model },
     /// The object or frame index; the name (area, point, voice, hero).
     index: usize = 0,
     arg_buf: [64]u8 = undefined,

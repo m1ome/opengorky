@@ -63,6 +63,8 @@ def short_bones(context, arm):
     meshes = [o for o in context.scene.objects if o.type == "MESH" and o.parent == arm]
     tall = max((max(o.dimensions) for o in meshes), default=0.0)
     size = 0.04 * tall if tall > 0 else 1.0
+    # Children of a bone (attach points) hang from its tail: kept where they are.
+    held = [(o, o.matrix_world.copy()) for o in context.scene.objects if o.parent == arm and o.parent_type == "BONE"]
     prev = context.view_layer.objects.active
     context.view_layer.objects.active = arm
     bpy.ops.object.mode_set(mode="EDIT")
@@ -73,6 +75,9 @@ def short_bones(context, arm):
             b.tail = b.head + d.normalized() * size
             b.roll = roll
     bpy.ops.object.mode_set(mode="OBJECT")
+    context.view_layer.update()
+    for o, w in held:
+        o.matrix_world = w
     context.view_layer.objects.active = prev
     arm.data.display_type = "STICK"
 
