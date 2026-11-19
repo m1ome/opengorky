@@ -347,6 +347,8 @@ const Conv = struct {
     full: bool = false,
     /// The edition's language number (string.tab's; the manifest's `language`).
     language: u8 = 0,
+    /// Its texts' code page.
+    page: formats.cp1251.Page = .cp1251,
     /// The battle devices' class files (the rules' `Device(archetype = "ft_time_bomb.ss")`):
     /// archetypes too.
     devices: std.ArrayList([]const u8) = .empty,
@@ -2868,7 +2870,7 @@ const Conv = struct {
                 for (pts, 0..) |p, i| {
                     var l: std.ArrayList(u8) = .empty;
                     try l.print(a, "{s}Point(name = ", .{if (i > 0) ", " else ""});
-                    try literal(a, &l, .{ .string = try utf8(a, p.name) });
+                    try literal(a, &l, .{ .string = try utf8(a, p.name, self.page) });
                     for ([_]struct { []const u8, f32 }{ .{ "x", p.x }, .{ "y", p.y }, .{ "angle", p.angle } }) |f| {
                         try l.print(a, ", {s} = ", .{f[0]});
                         try literal(a, &l, .{ .float = f[1] });
@@ -2914,31 +2916,31 @@ const Conv = struct {
             var l: std.ArrayList(u8) = .empty;
             switch (x) {
                 .string => |str| if (kind == .actor or kind == .object) {
-                    const name = try utf8(a, str);
+                    const name = try utf8(a, str, self.page);
                     // The runner reads its placeholders in any argument (scene/scenario.zig).
                     const p = core.scene.ogsActor(name);
                     if (p.ptr != name.ptr) try l.print(a, "@{s}", .{p}) else try ref(a, &l, name);
                 } else if (kind == .dialog) {
                     // Its block's name (the `.dlg`'s, lower case); one the game lacks as written.
-                    const t = try utf8(a, str);
+                    const t = try utf8(a, str, self.page);
                     const stem = try std.ascii.allocLowerString(a, if (std.ascii.endsWithIgnoreCase(t, ".dlg")) t[0 .. t.len - 4] else t);
                     if (self.dialog_names.contains(stem)) try l.appendSlice(a, "~d");
                     try literal(a, &l, .{ .string = if (self.dialog_names.contains(stem)) stem else t });
                 } else if (kind != null and kind.?.sigil() != 0) {
                     try l.print(a, "~{c}", .{kind.?.sigil()});
-                    try literal(a, &l, .{ .string = try utf8(a, str) });
+                    try literal(a, &l, .{ .string = try utf8(a, str, self.page) });
                 } else if (i == 1 and std.ascii.eqlIgnoreCase(cmd.exe, "GO_RUNFUN")) {
                     // GO_RUNFUN(obj, "init"): the function by its event's name.
                     try literal(a, &l, .{ .string = ogsify.renamedEvent(str) orelse str });
-                } else try sceneLiteral(a, &l, x),
+                } else try sceneLiteral(a, &l, x, self.page),
                 .number => |f| if (kind) |k| switch (k) {
                     .bool, .not => try l.appendSlice(a, if ((f != 0) != (k == .not)) "true" else "false"),
                     .given => try l.appendSlice(a, "true"),
                     // The exe's whole ticks (_ftol) in hundredths of a second: they read back the same.
                     .ticks => try seconds(a, &l, @round(@as(f64, @floatFromInt((core.scene.Arg{ .number = f }).int())) * 100 / core.scene.ticks_per_second) / 100),
                     .centis, .percent => try seconds(a, &l, @as(f64, f) / 100),
-                    else => try sceneLiteral(a, &l, x),
-                } else try sceneLiteral(a, &l, x),
+                    else => try sceneLiteral(a, &l, x, self.page),
+                } else try sceneLiteral(a, &l, x, self.page),
             }
             try sep(w, &n);
             try w.writeAll(l.items);
@@ -2961,9 +2963,9 @@ const Conv = struct {
     }
 
     /// A scene argument as written: a string in UTF-8, a whole number as one.
-    fn sceneLiteral(a: Allocator, l: *std.ArrayList(u8), x: formats.scriptlet.Arg) !void {
+    fn sceneLiteral(a: Allocator, l: *std.ArrayList(u8), x: formats.scriptlet.Arg, page: formats.cp1251.Page) !void {
         try literal(a, l, switch (x) {
-            .string => |str| .{ .string = try utf8(a, str) },
+            .string => |str| .{ .string = try utf8(a, str, page) },
             .number => |f| if (f == @trunc(f) and @abs(f) < 1e9) .{ .int = @intFromFloat(f) } else .{ .float = f },
         });
     }
@@ -2982,6 +2984,8 @@ const Conv = struct {
             break :blk formats.strtab.language(t);
         };
         self.language = language;
+        // Before any text: dialogs come first, then scenes and texts.
+        self.page = formats.cp1251.forLanguage(language);
         var m: Module = .{ .path = "" };
         const w = &m.data.writer;
         var n: usize = 0;
@@ -2995,9 +2999,9 @@ const Conv = struct {
             for (d.lines, 0..) |l, i| {
                 var s: std.ArrayList(u8) = .empty;
                 try s.appendSlice(a, "Line(who = ");
-                try literal(a, &s, .{ .string = try utf8(a, l.speaker) });
+                try literal(a, &s, .{ .string = try utf8(a, l.speaker, self.page) });
                 try s.appendSlice(a, ", text = ");
-                try literal(a, &s, .{ .string = try utf8(a, l.text) });
+                try literal(a, &s, .{ .string = try utf8(a, l.text, self.page) });
                 var vb: [96]u8 = undefined;
                 // A voice the game lacks stays out (Classic looks it up and plays nothing).
                 if (formats.dialog.voiceName(&vb, e.name, l.code, d.voiceIndex(i))) |v| {
@@ -3039,7 +3043,7 @@ const Conv = struct {
             var t = if (f[2]) |key| try formats.strtab.parseExamineKey(gpa, a, bytes, key) else try formats.strtab.parseStrings(gpa, bytes);
             defer t.deinit(gpa);
             var it = t.map.iterator();
-            while (it.next()) |kv| try map.put(a, kv.key_ptr.*, try utf8(a, kv.value_ptr.*));
+            while (it.next()) |kv| try map.put(a, kv.key_ptr.*, try utf8(a, kv.value_ptr.*, self.page));
             self.report.texts += t.map.count();
         }
         // Onto the blocks; what a block took leaves its table.
@@ -5436,9 +5440,9 @@ fn wordOrLiteral(a: Allocator, out: *std.ArrayList(u8), fd: schema.Field, v: Val
     try literal(a, out, v);
 }
 
-/// cp1251 text as UTF-8 (the project's one encoding).
-fn utf8(a: Allocator, s: []const u8) ![]const u8 {
-    return formats.cp1251.toUtf8(a, s);
+/// The game's text as UTF-8 (the project's one encoding).
+fn utf8(a: Allocator, s: []const u8, page: formats.cp1251.Page) ![]const u8 {
+    return formats.cp1251.toUtf8(a, s, page);
 }
 
 test "literals read back as the same value" {
