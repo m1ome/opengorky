@@ -340,6 +340,12 @@ fn mergeLevels(a: Allocator, units: []parser.Unit) Allocator.Error!void {
     if (try levels.merge(a, units)) |x| std.log.warn("{s}:{d}: {s}", .{ x.file, x.line, x.message });
 }
 
+/// UTF-8 `s` as the fonts' bytes, in the project's edition's code page.
+fn fontBytes(a: Allocator, s: []const u8) ![]const u8 {
+    const n = if (project) |p| manifest.languageNumber(p.manifest.language) else 0;
+    return cp1251.fromUtf8(a, s, cp1251.forLanguage(n));
+}
+
 /// The project closed (its own assets; the rules stay until the next open).
 pub fn close() void {
     if (project) |*p| {
@@ -423,7 +429,7 @@ fn loadTexts() !void {
             std.log.warn("{s}:{d}: {s} needs id and text", .{ u.file, r.line, c.text });
             continue;
         }
-        try into.put(a, id.?, try cp1251.fromUtf8(a, s.?));
+        try into.put(a, id.?, try fontBytes(a, s.?));
     };
     for (p.units) |u| for (u.modules) |*m| for (m.entities) |*e| try entityTexts(a, &t, m, e, null, 0);
     entity.useTexts(t);
@@ -452,7 +458,7 @@ fn entityTexts(a: Allocator, t: *@TypeOf(entity.texts), m: *const ir.Module, e: 
         const into = if (std.mem.eql(u8, f.name, "name")) &t.map else if (std.mem.eql(u8, f.name, "examine")) (if (std.mem.eql(u8, e.kind, "area")) &t.areas else &t.examine) else continue;
         const s = text(f.value) orelse continue;
         const id = idIn(.{ .m = m, .e = e }, level, 0) orelse continue;
-        try into.put(a, id, try cp1251.fromUtf8(a, s));
+        try into.put(a, id, try fontBytes(a, s));
     }
 }
 
@@ -883,15 +889,15 @@ fn sceneCommand(a: Allocator, c: ir.Call, line: u32) !core.scene.Command {
             continue;
         }
         if (x.kind == .ref) {
-            try args.append(a, .{ .string = try cp1251.fromUtf8(a, core.scene.exeActor(x.kind.ref)) });
+            try args.append(a, .{ .string = try fontBytes(a, core.scene.exeActor(x.kind.ref)) });
             continue;
         }
         const t = text(x) orelse "";
         if (kind == .dialog and !std.ascii.endsWithIgnoreCase(t, ".dlg")) {
-            try args.append(a, .{ .string = try std.fmt.allocPrint(a, "{s}.dlg", .{try cp1251.fromUtf8(a, t)}) });
+            try args.append(a, .{ .string = try std.fmt.allocPrint(a, "{s}.dlg", .{try fontBytes(a, t)}) });
             continue;
         }
-        try args.append(a, .{ .string = try cp1251.fromUtf8(a, t) });
+        try args.append(a, .{ .string = try fontBytes(a, t) });
     }
     return .{ .name = if (cmd) |p| p.exe else c.text, .args = args.items, .line = line };
 }
@@ -936,7 +942,7 @@ test "sceneCommand: OG Script's arguments as the exe's" {
 
 /// Block `dialog "<file>"` (the name without `.dlg`): its `Line(who, text, voice, cam)`
 /// rows; the speaker is the name `who` ends in (`speakers::HQ`: `HQ`), the voice its
-/// `voice.dat` entry (`voice/x.wav`: `x.wav`), its text in the fonts' cp1251. The project's
+/// `voice.dat` entry (`voice/x.wav`: `x.wav`), its text in the fonts' bytes. The project's
 /// one language: `language` aside.
 fn dialogOf(_: ?*anyopaque, a: Allocator, file: []const u8, language: u8) anyerror!core.scene.Dialog {
     _ = language;
@@ -956,8 +962,8 @@ fn dialogFrom(a: Allocator, e: *const ir.Entity) !core.scene.Dialog {
         };
         try lines.append(a, .{
             .speaker = if (named(c, "who")) |v| text(v) orelse "" else "",
-            // The font's bytes (the project's UTF-8 back to the game's cp1251).
-            .text = try cp1251.fromUtf8(a, if (named(c, "text")) |v| text(v) orelse "" else ""),
+            // The font's bytes (the project's UTF-8 back to the edition's code page).
+            .text = try fontBytes(a, if (named(c, "text")) |v| text(v) orelse "" else ""),
             .cam = cam,
             .voice = voice,
         });
