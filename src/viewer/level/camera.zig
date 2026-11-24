@@ -183,7 +183,7 @@ fn glide(self: *Viewer, g: [2]f32) void {
     for (0..2) |k| self.scroll[k] += @trunc((g[k] - self.scroll[k]) / 6);
 }
 /// Scroll limits (0x430200): with zoom a margin m = 320 − 320/zoom; with the panel
-/// visible another 50/zoom down.
+/// visible (not under the level-up window) another 50/zoom down.
 fn clampScroll(self: *Viewer, l: *LevelView) void {
     const size = l.size();
     const z = viewZoom(self);
@@ -191,7 +191,7 @@ fn clampScroll(self: *Viewer, l: *LevelView) void {
     const half = (cx + gfx.wide) / z;
     const half_y = (cy + gfx.tall) / z;
     const my = half_y - cy;
-    const panel_shown = self.gui != null and !self.gui.?.panel_hidden and !l.world.scene.cutscene and !l.world.scene.panorama;
+    const panel_shown = self.gui != null and !self.gui.?.panel_hidden and !self.gui.?.stats.modal and !l.world.scene.cutscene and !l.world.scene.panorama;
     // `scaling = adaptive` too, so the bottom cells clear the panel (its sides: `drawPanelSides`).
     const panel: f32 = if (panel_shown) 50 / z else 0;
     // A wide frame (`scaling = adaptive`) keeps its sides on the background too.
