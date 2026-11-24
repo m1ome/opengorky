@@ -27,6 +27,14 @@ pub const Scaling = enum {
 
 pub const Log = enum { none, warn, info };
 
+/// Who draws the models, shadows and effects.
+pub const Renderer = enum {
+    /// The software rasterizer (on the CPU threads).
+    cpu,
+    /// SDL GPU (Metal, Vulkan); without such a device, the CPU.
+    gpu,
+};
+
 /// 2D upscaling (icons, portraits, panels, cursor) with `hires`.
 pub const Upscale = enum {
     /// Smoothing xBR: smooth edges without blur.
@@ -63,6 +71,7 @@ pub const Config = struct {
     hires: bool = true,
     /// UI and icons with `hires`: smoothing upscale or the original pixels.
     upscale: Upscale = .xbr,
+    renderer: Renderer = .cpu,
     fullscreen: bool = false,
     /// Debug text: battle status line, health bars, F1 line.
     debug: bool = false,
@@ -116,6 +125,8 @@ pub const Config = struct {
                 cfg.hires = flag(val) orelse cfg.hires;
             } else if (std.mem.eql(u8, key, "upscale")) {
                 cfg.upscale = std.meta.stringToEnum(Upscale, val) orelse cfg.upscale;
+            } else if (std.mem.eql(u8, key, "renderer")) {
+                cfg.renderer = std.meta.stringToEnum(Renderer, val) orelse cfg.renderer;
             } else if (std.mem.eql(u8, key, "fullscreen")) {
                 cfg.fullscreen = flag(val) orelse cfg.fullscreen;
             } else if (std.mem.eql(u8, key, "debug")) {
@@ -172,6 +183,10 @@ pub const Config = struct {
             \\# off — original pixels, just larger
             \\upscale = {t}
             \\
+            \\# Models, shadows and effects drawn by: cpu — the processor (works everywhere),
+            \\# gpu — the video card (faster with detailed models; cpu where there is none)
+            \\renderer = {t}
+            \\
             \\# Fullscreen: 1 — yes, 0 — window (in game: F11, Alt+Enter, Cmd+Enter, Ctrl+Cmd+F)
             \\fullscreen = {d}
             \\
@@ -207,7 +222,7 @@ pub const Config = struct {
             \\# empty — the original game
             \\package = {s}
             \\
-        , .{ self.scaling, @intFromBool(self.hires), self.upscale, @intFromBool(self.fullscreen), @intFromBool(self.debug), self.log, self.fps_limit, self.fps_background, @intFromBool(self.pause_background), @intFromBool(self.console), @intFromBool(self.launcher), self.gamePath(), self.package.get() });
+        , .{ self.scaling, @intFromBool(self.hires), self.upscale, self.renderer, @intFromBool(self.fullscreen), @intFromBool(self.debug), self.log, self.fps_limit, self.fps_background, @intFromBool(self.pause_background), @intFromBool(self.console), @intFromBool(self.launcher), self.gamePath(), self.package.get() });
     }
 
     /// Reads `path`; creates it with defaults only if the file does not exist.
@@ -230,7 +245,7 @@ pub const Config = struct {
         return cfg;
     }
 
-    const keys = [_][]const u8{ "scaling", "hires", "upscale", "fullscreen", "debug", "log", "fps_limit", "fps_background", "pause_background", "console", "launcher", "game_path", "package" };
+    const keys = [_][]const u8{ "scaling", "hires", "upscale", "renderer", "fullscreen", "debug", "log", "fps_limit", "fps_background", "pause_background", "console", "launcher", "game_path", "package" };
 
     fn hasKey(data: []const u8, key: []const u8) bool {
         var it = std.mem.splitScalar(u8, data, '\n');
@@ -282,6 +297,8 @@ test "parse config" {
     try std.testing.expect(cfg.debug);
     try std.testing.expectEqual(Log.none, cfg.log);
     try std.testing.expectEqual(Upscale.off, cfg.upscale);
+    try std.testing.expectEqual(Renderer.gpu, Config.parse("renderer = gpu\n").renderer);
+    try std.testing.expectEqual(Renderer.cpu, Config.parse("renderer = vulkan\n").renderer);
     try std.testing.expectEqual(@as(u32, 60), cfg.fps_limit);
     try std.testing.expectEqual(@as(u32, 0), cfg.fps_background);
     var buf: [4096]u8 = undefined;

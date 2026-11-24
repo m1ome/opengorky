@@ -200,8 +200,18 @@ fn defaults(app: *App, a: Allocator) Kit {
         const id = p[if (std.mem.lastIndexOf(u8, p, "::")) |k| k + 2 else 0..];
         const e = entryOf(app, id) orelse continue;
         heroes.append(a, .{ .id = e.id }) catch continue;
-        const text = app.store.text(@import("entries.zig").fileOf(app, e) orelse continue);
-        const start = std.mem.indexOf(u8, text, "fn OnStart(") orelse continue;
+        heroRows(app, a, e, &rows);
+    }
+    return .{ .heroes = heroes.items, .rows = rows.items };
+}
+
+/// Hero `e`'s things onto `rows`: what its OnStart gives (`item::New…`), else the weapons
+/// nested in its file's blocks (`weapon la: weapons::medusalong { place = hand; }`: Medusa's,
+/// given by the battle that has her, none by a start).
+fn heroRows(app: *App, a: Allocator, e: @import("catalog.zig").Entry, rows: *std.ArrayList(Row)) void {
+    const text = app.store.text(@import("entries.zig").fileOf(app, e) orelse return);
+    const before = rows.items.len;
+    if (std.mem.indexOf(u8, text, "fn OnStart(")) |start| {
         const end = std.mem.indexOfPos(u8, text, start, "\n        }") orelse text.len;
         var hand = false;
         var lines = std.mem.tokenizeScalar(u8, text[start..end], '\n');
@@ -214,8 +224,8 @@ fn defaults(app: *App, a: Allocator) Kit {
             _ = args.next();
             const n: i32 = if (args.next()) |c| std.fmt.parseInt(i32, c, 10) catch 1 else 1;
             const ammo = isAmmo(app, class);
-            const last = if (rows.items.len > 0) &rows.items[rows.items.len - 1] else null;
-            if (!ammo and last != null and std.mem.eql(u8, last.?.class, class) and std.mem.eql(u8, last.?.hero, e.id)) {
+            const last = if (rows.items.len > before) &rows.items[rows.items.len - 1] else null;
+            if (!ammo and last != null and std.mem.eql(u8, last.?.class, class)) {
                 last.?.count += 1;
                 continue;
             }
@@ -224,7 +234,35 @@ fn defaults(app: *App, a: Allocator) Kit {
             rows.append(a, .{ .hero = e.id, .class = class, .count = n, .hand = in_hand }) catch {};
         }
     }
-    return .{ .heroes = heroes.items, .rows = rows.items };
+    if (rows.items.len > before) return;
+    for (nestedWeapons(a, text)) |w| rows.append(a, .{ .hero = e.id, .class = w.class, .count = 1, .hand = w.hand }) catch {};
+}
+
+/// The `weapon <name>: <archetype> { … }` blocks of a character file, in hand when
+/// `place = hand`; one archetype once.
+const Nested = struct { class: []const u8, hand: bool };
+fn nestedWeapons(a: Allocator, text: []const u8) []const Nested {
+    var out: std.ArrayList(Nested) = .empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var cur: ?usize = null;
+    while (lines.next()) |raw| {
+        const l = std.mem.trim(u8, raw, " \t\r");
+        if (std.mem.startsWith(u8, l, "weapon ") and std.mem.endsWith(u8, l, "{")) {
+            const colon = std.mem.indexOf(u8, l, ": ") orelse continue;
+            const class = std.mem.trim(u8, l[colon + 2 .. l.len - 1], " ");
+            cur = null;
+            const seen = for (out.items) |w| {
+                if (std.mem.eql(u8, w.class, class)) break true;
+            } else false;
+            if (seen) continue;
+            out.append(a, .{ .class = class, .hand = false }) catch continue;
+            cur = out.items.len - 1;
+        } else if (cur) |c| {
+            if (std.mem.eql(u8, l, "place = hand;")) out.items[c].hand = true;
+            if (std.mem.eql(u8, l, "}")) cur = null;
+        }
+    }
+    return out.items;
 }
 
 /// Weapon archetype `class` names its ammo (`ammo = items::…`).
@@ -468,6 +506,16 @@ fn ogPage(app: *App, a: Allocator) void {
     };
     const k = picker.listKey(app, a, rows.items) orelse return;
     kit.heroes = std.mem.concat(a, Hero, &.{ kit.heroes, &.{.{ .id = k }} }) catch return;
+    // Its things as a start gives them (Medusa: her own weapons), if it has none in the kit yet.
+    if (entryOf(app, k)) |e| {
+        var things: std.ArrayList(Row) = .empty;
+        things.appendSlice(a, kit.rows) catch return;
+        const has = for (kit.rows) |r| {
+            if (std.ascii.eqlIgnoreCase(r.hero, e.id)) break true;
+        } else false;
+        if (!has) heroRows(app, a, e, &things);
+        kit.rows = things.items;
+    }
     store(app, a, kit);
 }
 
@@ -536,6 +584,16 @@ test "testkit: an OpenGorky kit as the room's blocks" {
             "item og_tk_4: items::bandage {\n    owner = \"ovitz\";\n    place = backpack;\n}\n",
         try ogBlocks(a, kit, &.{"items::shotgun_ammo"}),
     );
+}
+
+test "testkit: a character's nested weapons, the one in hand" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const text = "    fighter medusa {\n        weapon la: weapons::medusalong {\n            place = hand;\n        }\n        weapon sa: weapons::medusashort {\n            place = backpack;\n        }\n        weapon lb: weapons::medusalong {\n        }\n    }\n";
+    const ws = nestedWeapons(arena.allocator(), text);
+    try std.testing.expectEqual(2, ws.len);
+    try std.testing.expectEqualStrings("weapons::medusalong", ws[0].class);
+    try std.testing.expect(ws[0].hand and !ws[1].hand);
 }
 
 test "testkit: lines, calls" {

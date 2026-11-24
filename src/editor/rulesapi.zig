@@ -761,7 +761,7 @@ pub const all = [_]Call{
     } },
     .{ .name = "PostChain", .doc = .{ .en = "The frame's post-processing (OpenGorky): steps over the drawn world, before the interface; a level's own row, else (a battle) its location's, else the global one. CPU only.", .ru = "Постобработка кадра (OpenGorky): шаги поверх нарисованного мира, до интерфейса; своя строка уровня, иначе (бой) строка его локации, иначе общая. Только CPU." }, .fields = &.{
         file("level", .{ .en = "the level this chain is for (\"01_port\"; a battle is a level of its own, without one it takes its location's: 01_port for every 01__… battle); \"\": every level without its own", .ru = "уровень, для которого эта цепочка (\"01_port\"; бой — отдельный уровень, без своей берёт цепочку локации: 01_port для всех боёв 01__…); \"\": все уровни без своей" }),
-        file("steps", .{ .en = "list(Post(program = grade | vignette | scanlines, k, rgb), …), in order", .ru = "list(Post(program = grade | vignette | scanlines, k, rgb), …), по порядку" }),
+        file("steps", .{ .en = "list(Post(program = grade | vignette | scanlines | hsl, k, rgb), …), in order", .ru = "list(Post(program = grade | vignette | scanlines | hsl, k, rgb), …), по порядку" }),
     } },
 };
 

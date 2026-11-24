@@ -669,7 +669,8 @@ fn lookRows(app: *App, tab: Tab, ic: icons.Icon, names: []const []const u8) void
         shown += 1;
         if (shown > 400) break;
         const note = if (tab == .models and app.ogLayout()) @import("look_pages.zig").modelNote(app, n) else "";
-        if (leaf(app, 2, null, ic, n, note, doctabs.isShown(app, tab, n), null)) doctabs.show(app, tab, n);
+        const item: ?treemenu.Item = if (tab == .models) .of(.model, n) else null;
+        if (leaf(app, 2, null, ic, n, note, doctabs.isShown(app, tab, n), item)) doctabs.show(app, tab, n);
     }
 }
 

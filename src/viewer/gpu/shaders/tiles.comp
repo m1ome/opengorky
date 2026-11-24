@@ -1,0 +1,51 @@
+#version 450
+// The 8×8 layer tiles' floor heights (render/layer.zig `castShadow`, 0x54b200): each
+// caster in turn marks the tiles its projected box (shadow.comp) touches with its floor
+// height, the first one winning; a caster wholly off the canvas marks none. One thread:
+// a few casters, 64 tiles.
+layout(local_size_x = 1) in;
+
+#ifdef MSL
+#define RO(i) (i + 1)
+#define RW(i) (i + 3)
+#else
+#define RO(i) (i)
+#define RW(i) (i)
+#endif
+
+layout(std430, set = 0, binding = RO(0)) readonly buffer Boxes { uint boxes[]; };
+layout(std430, set = 0, binding = RO(1)) readonly buffer Floors { float floors[]; };
+layout(std430, set = 1, binding = RW(0)) writeonly buffer Tiles { float tiles[64]; };  // 3e38: none
+
+layout(set = 2, binding = 0) uniform T {
+    uint n;   // casters
+    float w;  // canvas pixels
+    float h;
+    uint pad;
+};
+
+float unordered(uint u) {
+    return uintBitsToFloat((u & 0x80000000u) != 0u ? u & 0x7FFFFFFFu : ~u);
+}
+
+void main() {
+    float tile[64];
+    for (int k = 0; k < 64; k++) tile[k] = 3e38;
+    float tw = w / 8.0;
+    float th = h / 8.0;
+    for (uint i = 0u; i < n; i++) {
+        float lx = unordered(boxes[i * 4u]);
+        float ly = unordered(boxes[i * 4u + 1u]);
+        float hx = unordered(boxes[i * 4u + 2u]);
+        float hy = unordered(boxes[i * 4u + 3u]);
+        if (!(lx <= hx) || hx < 0.0 || hy < 0.0 || lx >= w || ly >= h) continue;
+        int c0 = int(clamp(floor(lx / tw), 0.0, 7.0));
+        int c1 = int(clamp(floor(hx / tw), 0.0, 7.0));
+        int r0 = int(clamp(floor(ly / th), 0.0, 7.0));
+        int r1 = int(clamp(floor(hy / th), 0.0, 7.0));
+        for (int r = r0; r <= r1; r++)
+            for (int c = c0; c <= c1; c++)
+                if (tile[r * 8 + c] > 1e38) tile[r * 8 + c] = floors[i];
+    }
+    for (int k = 0; k < 64; k++) tiles[k] = tile[k];
+}

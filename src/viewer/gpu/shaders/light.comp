@@ -1,0 +1,150 @@
+#version 450
+// render/layer.zig `drawParts` per vertex, on the posed points (pose.comp): the normal
+// (minus the normalized sum of face normals (A − B) × (C − B) over the welded vertex's
+// triangles), the world point and normal (model_cache toWorld, the camera's aspect), the
+// level light (`Lighting.color`), the projection to canvas pixels — the vertex the model
+// pipeline (model.vert) draws. The screen box of the drawn thing grows by the vertex.
+layout(local_size_x = 64) in;
+
+#ifdef MSL
+#define RO(i) (i + 1)
+#define RW(i) (i + 7)
+#else
+#define RO(i) (i)
+#define RW(i) (i)
+#endif
+
+struct SVert {
+    vec4 pos;
+    uint start;
+    uint count;
+    vec2 uv;
+};
+
+layout(std430, set = 0, binding = RO(0)) readonly buffer Verts { SVert verts[]; };
+layout(std430, set = 0, binding = RO(1)) readonly buffer Tris { uint tris[]; };     // 3 per triangle
+layout(std430, set = 0, binding = RO(2)) readonly buffer Grp { uvec2 grp[]; };      // per vertex: its weld group's corners
+layout(std430, set = 0, binding = RO(3)) readonly buffer GrpList { uint corners[]; };  // triangle of each corner
+layout(std430, set = 0, binding = RO(4)) readonly buffer Posed { vec4 posed[]; };
+layout(std430, set = 0, binding = RO(5)) readonly buffer Omni { vec4 omni[]; };     // pos, range; color
+layout(std430, set = 1, binding = RW(0)) writeonly buffer Out { float outv[]; };    // model.vert vertices, 8 floats
+layout(std430, set = 1, binding = RW(1)) buffer Boxes { uint boxes[]; };            // min x, min y, max x, max y (ordered bits)
+layout(std430, set = 1, binding = RW(2)) buffer ZRange { uint zrange[2]; };         // the frame's depth range (model.vert)
+
+layout(set = 2, binding = 0) uniform L {
+    vec4 local0;      // the model's local axes (model_cache `local`, rows)
+    vec4 local1;
+    vec4 local2;
+    vec4 center_s;    // mesh center; mesh scale
+    vec4 pos_aspect;  // placement; the camera's aspect
+    vec4 rot;         // cos, sin of the angle; canvas pixels per screen pixel; perspective (1) or not
+    vec4 origin;      // layer origin (screen pixels)
+    vec4 ambient;
+    vec4 directional;
+    vec4 ortho;       // the isometric camera's cos, sin, k
+    vec4 eye_scale;   // perspective: eye, scale
+    vec4 fwd;
+    vec4 right;
+    vec4 up;
+    vec4 persp;       // focal, focal_y, cx, cy
+    uvec4 counts;     // vertices, posed base, out base, lamps
+    uvec4 box;        // box slot + 1 (0: none)
+};
+
+vec3 normalize0(vec3 a) {
+    float l = length(a);
+    return l > 0.0 ? a / l : a;
+}
+
+vec3 mulVec(vec3 v) {
+    return vec3(dot(local0.xyz, v), dot(local1.xyz, v), dot(local2.xyz, v));
+}
+
+// Floats ordered as unsigned ints (atomicMin/Max on the bits).
+uint ordered(float f) {
+    uint u = floatBitsToUint(f);
+    return (u & 0x80000000u) != 0u ? ~u : u | 0x80000000u;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= counts.x) return;
+    uint pb = counts.y;
+    SVert v = verts[i];
+    uvec2 g = grp[i];
+    vec3 acc = vec3(0.0);
+    for (uint j = 0u; j < g.y; j++) {
+        uint t = corners[g.x + j] * 3u;
+        vec3 p0 = posed[pb + tris[t]].xyz;
+        vec3 p1 = posed[pb + tris[t + 1u]].xyz;
+        vec3 p2 = posed[pb + tris[t + 2u]].xyz;
+        acc += normalize0(cross(p0 - p1, p2 - p1));
+    }
+    vec3 nm = normalize0(acc);
+
+    float s = center_s.w;
+    float ca = rot.x;
+    float sa = rot.y;
+    vec3 lp = mulVec(posed[pb + i].xyz) + center_s.xyz;
+    float mx = lp.x * s;
+    float my = lp.z * s;
+    vec3 pos = pos_aspect.xyz;
+    vec3 w = vec3(pos.x + mx * ca - my * sa, pos.y + mx * sa + my * ca, pos.z + lp.y * s);
+    w.z = pos.z + (w.z - pos.z) * pos_aspect.w;
+    vec3 n1 = mulVec(-nm);
+    vec3 nw = vec3(n1.x * ca - n1.z * sa, n1.x * sa + n1.z * ca, n1.y);
+
+    vec3 col = ambient.xyz;
+    for (uint k = 0u; k < counts.w; k++) {
+        vec4 o = omni[k * 2u];
+        vec3 oc = omni[k * 2u + 1u].xyz;
+        vec3 l = o.xyz - w;
+        float d = dot(nw, l);
+        if (d <= 0.0) continue;
+        float d2 = dot(l, l);
+        float att = 1.0 - d2 / (o.w * o.w);
+        if (att <= 0.0) continue;
+        col += oc * (att * d / sqrt(d2));
+    }
+    const vec3 dir = vec3(1.0, 0.3, 0.7) / length(vec3(1.0, 0.3, 0.7));
+    float nd = dot(nw, dir);
+    if (nd > 0.0) col += directional.xyz * nd;
+    col = min(col, vec3(1.0));
+
+    float x;
+    float y;
+    float depth;
+    if (rot.w > 0.5) {
+        vec3 q = vec3(w.x, w.z, w.y) * eye_scale.w;
+        vec3 d = q - eye_scale.xyz;
+        float zc = max(1e-4, dot(d, fwd.xyz));
+        x = persp.z + dot(d, right.xyz) / zc * persp.x;
+        y = persp.w - dot(d, up.xyz) / zc * persp.y;
+        depth = -zc;
+    } else {
+        float yy = -ortho.y * w.x + ortho.x * w.y;
+        x = ortho.x * w.x + ortho.y * w.y;
+        y = (yy - w.z) / ortho.z;
+        depth = (yy + w.z) / ortho.z;
+    }
+    float lx = x - origin.x;
+    float ly = y - origin.y;
+    uint o = (counts.z + i) * 8u;
+    outv[o + 0u] = lx * rot.z;
+    outv[o + 1u] = ly * rot.z;
+    outv[o + 2u] = -depth;
+    atomicMin(zrange[0], ordered(-depth));
+    atomicMax(zrange[1], ordered(-depth));
+    outv[o + 3u] = v.uv.x;
+    outv[o + 4u] = v.uv.y;
+    outv[o + 5u] = col.x;
+    outv[o + 6u] = col.y;
+    outv[o + 7u] = col.z;
+    if (box.x != 0u) {
+        uint b = (box.x - 1u) * 4u;
+        atomicMin(boxes[b + 0u], ordered(lx));
+        atomicMin(boxes[b + 1u], ordered(ly));
+        atomicMax(boxes[b + 2u], ordered(lx));
+        atomicMax(boxes[b + 3u], ordered(ly));
+    }
+}

@@ -1,6 +1,7 @@
 //! Actor layer: visible actor selection, scale and hand weapons, light and ice, threaded software model raster, shadows. Background depth: level/depth.zig; layer texture and upload: level/layer.zig.
 
 const std = @import("std");
+const gpu_models = @import("../gpu/models.zig");
 const depth = @import("depth.zig");
 const effects_view = @import("effects_view.zig");
 const billboards = @import("billboards.zig");
@@ -312,6 +313,14 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
     }
     perf.add(.layer_begin, pt);
     pt = perf.now();
+    // --renderer gpu: model parts to the GPU pass instead of the canvas.
+    const gpu = gpu_models.active;
+    if (gpu) |g| {
+        try g.begin(layer.canvas.img.width, layer.canvas.img.height, layer.ss);
+        layer.sink = g.sink();
+    }
+    defer layer.sink = null;
+    self.gpu_any = false;
     var any = false;
     const scale = self.world.actorScale() * self.debug.scale_tweak;
     // Shadows (0x4206dc, 0x42097e): light `shadowLight` from .lts; off with
@@ -348,6 +357,7 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
             .frame = n.actor.frameIn(model),
             .alpha = itemFlash(self, o),
             .depth_bias = og.render.depth_fit.fit.ground_item_bias,
+            .box_id = @intFromPtr(o),
         });
         n.actor.screen_box = if (layer.bbox[0] <= layer.bbox[2]) .{ layer.bbox[0] + scroll[0], layer.bbox[1] + scroll[1], layer.bbox[2] + scroll[0], layer.bbox[3] + scroll[1] } else null;
         any = true;
@@ -358,6 +368,7 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
         const raw = models.get(og.fields.meshFile(o)) orelse continue;
         var pl = place.placement(self, o, raw) orelse continue;
         const model = try place.posed(self, o, raw, &pl);
+        pl.box_id = @intFromPtr(o);
         pl.attach = weaponInHand(self, o, model);
         pl.extra = linkedMeshes(self, o, model);
         if (!actorPasses(self, o, &n.actor, &pl)) continue;
@@ -373,6 +384,7 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
             ep.attach = null;
             ep.extra = &.{};
             ep.frame = 0;
+            ep.box_id = @intFromPtr(slot);
             const em_posed = if (eb.still) em else blk: {
                 const to = n.actor.drawFrame(em);
                 eb.last_frame = to;
@@ -408,11 +420,13 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
     layer.canvas.flush(layer_mod.rasterPool(self.io));
     perf.add(.models, pt);
     pt = perf.now();
-    if (self.shadows) if (self.backdrop.lights) |lt| {
+    // On the GPU path the shadows are cast and mixed there (the layer's mask stays empty).
+    if (gpu == null and self.shadows) if (self.backdrop.lights) |lt| {
         layer.compositeShadow(self.world.cam, lt.shadow_intensity, depth.shadowBias(self, src), layer_mod.rasterPool(self.io));
         any = true;
     };
     perf.add(.shadow_mix, pt);
+    pt = perf.now();
     // Billboards recorded and rasterised in bands on threads too: explosions cover
     // much of the screen, one by one on this thread they took tens of ms per frame.
     if (self.world.isCombat()) {
@@ -420,6 +434,19 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
         try billboards.all(self, LayerSink{ .self = self, .layer = layer, .models = models, .drew = &any });
         layer.canvas.flush(layer_mod.rasterPool(self.io));
     }
+    perf.add(.effects, pt);
+    pt = perf.now();
+    // The GPU's models, shadows and effects, last: at ss 1 the depth it tests against has
+    // the models the CPU drew (tinted, overlaid).
+    layer.sink = null;
+    if (gpu) |g| {
+        const bw = layer.canvas.img.width / layer.ss;
+        const bh = layer.canvas.img.height / layer.ss;
+        const shade: ?[2]f32 = if (self.shadows) if (self.backdrop.lights) |lt| .{ lt.shadow_intensity, depth.shadowBias(self, src) } else null else null;
+        self.gpu_any = try g.finish(if (layer.ss == 1) layer.canvas.depth else layer.base_depth, bw, bh, self.world.cam, scroll, shade);
+        if (self.gpu_any) any = true;
+    }
+    perf.add(.gpu, pt);
     if (!any) return;
     self.layer_any = true;
     pt = perf.now();
@@ -452,6 +479,11 @@ pub fn drawActors(self: *LevelView, r: *c.SDL_Renderer, scroll: [2]f32) !void {
 /// Model layer, glow and screen billboards over the frame.
 fn present(self: *LevelView, r: *c.SDL_Renderer, tex: *c.SDL_Texture, layer: *const render_layer.Layer) !void {
     try gfx.check(c.SDL_RenderTexture(r, tex, null, null));
+    if (self.gpu_any) if (gpu_models.active) |g| {
+        if (g.tex) |gt| try gfx.check(c.SDL_RenderTexture(r, gt, null, null));
+        if (g.glow_used) if (g.glow_tex) |gt| try gfx.check(c.SDL_RenderTexture(r, gt, null, null));
+        if (g.screen_used) if (g.screen_tex) |st| try gfx.check(c.SDL_RenderTexture(r, st, null, null));
+    };
     if (layer.glow_used) if (self.glow_tex) |gt| try gfx.check(c.SDL_RenderTexture(r, gt, null, null));
     if (layer.screen_used) if (self.screen_tex) |st| try gfx.check(c.SDL_RenderTexture(r, st, null, null));
 }

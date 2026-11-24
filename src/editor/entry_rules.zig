@@ -30,6 +30,13 @@ pub fn classOf(e: Entry) []const u8 {
     return rules.stem(e.entry);
 }
 
+/// A class without its file path or module (`weapons::medusalong` → `medusalong`,
+/// `wp_fang.ss` → `wp_fang`): the catalog entry's id it names.
+pub fn bareClass(class: []const u8) []const u8 {
+    const s = rules.stem(class);
+    return if (std.mem.lastIndexOf(u8, s, "::")) |k| s[k + 2 ..] else s;
+}
+
 /// Store indices of an OpenGorky project's texts: every `.ogs` of its `src/` (rows, code
 /// and data blocks: the OG reader reads them all, loaders/ogs.zig), then those made this session.
 fn files(app: *App, a: Allocator) []usize {

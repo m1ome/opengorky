@@ -63,6 +63,10 @@ pub fn layout(a: Allocator, p: Project) Error![]File {
         const k = try ownerKey(a, m.path, e.name);
         if (!owners.contains(k)) try owners.put(a, k, try blockPath(a, e));
     };
+    // A hero with a fighter of its name (Medusa: an enemy and a party member) in a file of
+    // its own: the editor edits a file's first block.
+    var fighters: std.StringHashMapUnmanaged(void) = .empty;
+    for (p.modules) |m| for (m.entities) |e| if (std.mem.eql(u8, e.kind, "fighter")) try fighters.put(a, try ownerKey(a, m.path, e.name), {});
     for (p.modules) |m| for (m.entities) |e| if (isLevel(e.kind) and e.children.len == 0) try heads.put(a, try std.fmt.allocPrint(a, "{s} {s}", .{ e.kind, e.name }), {});
     // A level's own code: its `logic.ogs` (its own component there too, not printed apart).
     var level_code: std.StringHashMapUnmanaged([]const u8) = .empty;
@@ -72,7 +76,10 @@ pub fn layout(a: Allocator, p: Project) Error![]File {
         try level_code.put(a, try ownerKey(a, m.path, e.name), if (isBattle(e.kind)) try blockPath(a, e) else try std.fmt.allocPrint(a, "{s}/logic.ogs", .{std.fs.path.dirname(try blockPath(a, e)).?}));
     for (p.modules) |m| {
         for (m.entities) |e| {
-            const path = try blockPath(a, e);
+            const path = if (std.mem.eql(u8, e.kind, "hero") and fighters.contains(try ownerKey(a, m.path, e.name)))
+                try std.fmt.allocPrint(a, "characters/{s}_hero.ogs", .{try fileName(e.name)})
+            else
+                try blockPath(a, e);
             // A battle whole in its battle.ogs.
             if (!isLevel(e.kind) or isBattle(e.kind)) {
                 for (e.children) |c| try nestedOwn(a, &nested_own, c, path);

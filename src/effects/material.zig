@@ -33,8 +33,9 @@ pub const Blend = enum { add, alpha, screen };
 /// `heat` ripples the texture by phase k, `tint` greys the texel by k.
 pub const Program = enum { none, dissolve, heat, tint };
 
-/// The frame's post-processing (a project's, OpenGorky only: none in Classic): built-in CPU
-/// programs over the drawn world, in order (render/post.zig runs them); a level's own row,
+/// The frame's post-processing (a project's, OpenGorky only: none in Classic): built-in
+/// programs over the drawn world, in order (render/post.zig, the viewer's shader: GPU
+/// renderer only); a level's own row,
 /// else (a battle) its location's, else the global one (level ""): core/modules.zig postSteps.
 pub const PostChain = struct {
     pub const call = "PostChain";
@@ -43,7 +44,9 @@ pub const PostChain = struct {
     pub const doc =
         \\The frame's post-processing: steps over the drawn world (before the interface), in
         \\order, each Post(program, k, rgb): grade (colour ×rgb, saturation ×k), vignette (the
-        \\edges darkened by k), scanlines (every other screen line darkened by k). CPU only.
+        \\edges darkened by k), scanlines (every other screen line darkened by k), hsl (hue
+        \\turned by (r − 1)·180°, saturation ×g, lightness ×b, mixed in by k). Only with the
+        \\GPU renderer (`renderer = gpu`): with the CPU one the chain is ignored.
         \\  level: the level (dat folder, "01_port") this chain is for; "" (left out): every
         \\  level without its own. A battle level is a level of its own ("01__port_park"); one
         \\  without its own row takes its location's (the level whose scripts start it:
@@ -59,7 +62,7 @@ pub const Post = struct {
     k: f32 = 1,
     rgb: [3]f32 = .{ 1, 1, 1 },
 };
-const PostProgram = enum { grade, vignette, scanlines };
+const PostProgram = enum { grade, vignette, scanlines, hsl };
 
 /// The materials in force by name (core/modules.zig sets it with the rules' tables).
 pub var lookup: *const fn ([]const u8) ?*const Material = none;

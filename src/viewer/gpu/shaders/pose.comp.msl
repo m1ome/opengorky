@@ -1,0 +1,86 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct _17
+{
+    uint _m0;
+    uint _m1;
+    uint _m2;
+    uint _m3;
+};
+
+struct _36
+{
+    float4 _m0;
+    uint _m1;
+    uint _m2;
+    float2 _m3;
+};
+
+struct _38
+{
+    _36 _m0[1];
+};
+
+struct _96
+{
+    uint2 _m0[1];
+};
+
+struct _116
+{
+    float _m0[1];
+};
+
+struct _226
+{
+    float4 _m0[1];
+};
+
+constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(64u, 1u, 1u);
+
+kernel void main0(constant _17& _19 [[buffer(0)]], device _38& _40 [[buffer(1)]], device _96& _98 [[buffer(2)]], device _116& _118 [[buffer(3)]], device _226& _228 [[buffer(4)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+{
+    do
+    {
+        if (gl_GlobalInvocationID.x >= _19._m0)
+        {
+            break;
+        }
+        bool _66 = _19._m3 != 0u;
+        bool _72;
+        if (_66)
+        {
+            _72 = _40._m0[gl_GlobalInvocationID.x]._m2 > 0u;
+        }
+        else
+        {
+            _72 = _66;
+        }
+        float3 _269;
+        if (_72)
+        {
+            float3 _268;
+            _268 = _40._m0[gl_GlobalInvocationID.x]._m0.xyz * _40._m0[gl_GlobalInvocationID.x]._m0.w;
+            for (uint _267 = 0u; _267 < _40._m0[gl_GlobalInvocationID.x]._m2; )
+            {
+                uint _102 = _40._m0[gl_GlobalInvocationID.x]._m1 + _267;
+                uint _113 = (_19._m2 + _98._m0[_102].x) * 12u;
+                float3 _221 = _268 + (float3((((_118._m0[_113] * _40._m0[gl_GlobalInvocationID.x]._m0.x) + (_118._m0[_113 + 3u] * _40._m0[gl_GlobalInvocationID.x]._m0.y)) + (_118._m0[_113 + 6u] * _40._m0[gl_GlobalInvocationID.x]._m0.z)) + _118._m0[_113 + 9u], (((_118._m0[_113 + 1u] * _40._m0[gl_GlobalInvocationID.x]._m0.x) + (_118._m0[_113 + 4u] * _40._m0[gl_GlobalInvocationID.x]._m0.y)) + (_118._m0[_113 + 7u] * _40._m0[gl_GlobalInvocationID.x]._m0.z)) + _118._m0[_113 + 10u], (((_118._m0[_113 + 2u] * _40._m0[gl_GlobalInvocationID.x]._m0.x) + (_118._m0[_113 + 5u] * _40._m0[gl_GlobalInvocationID.x]._m0.y)) + (_118._m0[_113 + 8u] * _40._m0[gl_GlobalInvocationID.x]._m0.z)) + _118._m0[_113 + 11u]) * as_type<float>(_98._m0[_102].y));
+                _268 = _221;
+                _267++;
+                continue;
+            }
+            _269 = _268;
+        }
+        else
+        {
+            _269 = _40._m0[gl_GlobalInvocationID.x]._m0.xyz;
+        }
+        _228._m0[_19._m1 + gl_GlobalInvocationID.x] = float4(_269, 1.0);
+        break;
+    } while(false);
+}
+

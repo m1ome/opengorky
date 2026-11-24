@@ -118,8 +118,10 @@ pub const Viewer = struct {
     gamma_lut: [256]u8 = undefined,
     gamma_lut_for: f32 = -1,
     gamma_tex: ?*c.SDL_Texture = null,
-    /// The world after a project's post-processing (frame.applyPost).
-    post_tex: ?*c.SDL_Texture = null,
+    /// A project's post-processing (frame.applyPost, GPU renderer only) and the world's
+    /// copy it reads.
+    post: @import("../gpu/post.zig").Post = .{},
+    post_copy: ?*c.SDL_Texture = null,
     /// `*-blur` scaling: the frame shrunk twice (the blurred borders).
     blur_tex: [2]?*c.SDL_Texture = .{ null, null },
     /// 640×480 frame: everything draws here, then stretches to the window per `scaling`.
@@ -197,7 +199,8 @@ pub const Viewer = struct {
         self.video_queue.deinit(self.gpa);
         if (self.zoom_tex) |t| c.SDL_DestroyTexture(t);
         if (self.gamma_tex) |t| c.SDL_DestroyTexture(t);
-        if (self.post_tex) |t| c.SDL_DestroyTexture(t);
+        if (self.post_copy) |t| c.SDL_DestroyTexture(t);
+        self.post.deinit(self.renderer);
         for (self.blur_tex) |b| if (b) |t| c.SDL_DestroyTexture(t);
         if (self.thumb) |*t| t.deinit(self.gpa);
         self.console.deinit(self.gpa);

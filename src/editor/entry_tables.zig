@@ -164,7 +164,10 @@ fn heroLabel(app: *App, a: Allocator, r: rules.HeroAttack) []const u8 {
 fn heroAnims(app: *App, a: Allocator, hi: ?usize) []const []const u8 {
     const hs = heroes(app, a);
     if (hs.len == 0) return &.{};
-    const e = app.catalog.entries.items[hi orelse hs[@min(app.attack_hero, hs.len - 1)]];
+    const shown = for (hs) |h| {
+        if (h == app.attack_hero) break h;
+    } else hs[0];
+    const e = app.catalog.entries.items[hi orelse shown];
     const f = @import("entries.zig").fileOf(app, e) orelse return &.{};
     var out: std.ArrayList([]const u8) = .empty;
     for (preview.anims(a, app.store.text(f))) |an| if (std.mem.indexOfScalar(u8, an.slot, '/') == null) out.append(a, an.slot) catch {};

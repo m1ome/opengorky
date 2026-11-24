@@ -54,6 +54,9 @@ pub fn mergeRects(rs: []Canvas.Rect) usize {
     return n;
 }
 
+/// Render threads asked for ($OPENGORKY_RENDER_THREADS, run.zig); null: the core count.
+pub var render_threads: ?usize = null;
+
 /// Model raster pool: one per process, threads by core count (at most
 /// Canvas.max_threads), tasks run on the Io (std.Io.Group).
 pub fn rasterPool(io: Io) *og.render.raster.Canvas.Pool {
@@ -63,7 +66,7 @@ pub fn rasterPool(io: Io) *og.render.raster.Canvas.Pool {
     };
     if (!S.ready) {
         S.pool = .{ .io = io };
-        S.pool.init(std.math.clamp(std.Thread.getCpuCount() catch 1, 1, og.render.raster.Canvas.max_threads));
+        S.pool.init(std.math.clamp(render_threads orelse std.Thread.getCpuCount() catch 1, 1, og.render.raster.Canvas.max_threads));
         S.ready = true;
     }
     return &S.pool;

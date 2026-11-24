@@ -60,7 +60,9 @@ pub fn enemy(app: *App, a: Allocator, idx: usize, file: usize, text: []const u8,
             } else gui.txtWrap(tx.get(tx.report_none), .caption, theme.warn, font_mod.regular);
             clay.close();
         }
-        if (mesh) |m| modelSlots(app, a, idx, m, null, true);
+        // OpenGorky: picked into the file holding it (its look's), as a hero's is; a
+        // character both hero and enemy has a look for each (Medusa: medusa, medusa_2).
+        if (mesh) |m| modelSlots(app, a, idx, m, if (app.ogLayout()) @import("og_page.zig").meshHolder(app, file) else null, true);
         gui.blockEnd();
     }
     // Base stats with the resistances.

@@ -243,16 +243,40 @@ pub fn applyGamma(self: *Viewer) void {
     rewriteTarget(r, &self.gamma_tex, Lut{ .lut = &self.gamma_lut });
 }
 
-/// A project's post-processing `steps` (render/post.zig) over the render target
-/// (the world just drawn).
+/// A project's post-processing `steps` over the render target (the world just drawn): the
+/// target copied, drawn back over itself through gpu/post.zig's shader. Only on the GPU
+/// renderer: on the CPU one the chain is ignored.
 pub fn applyPost(self: *Viewer, steps: []const og.core.effect.Post) void {
-    const Chain = struct {
-        steps: []const og.core.effect.Post,
-        fn run(ch: @This(), px: []u8, w: usize, h: usize, pitch: usize) void {
-            og.render.post.apply(ch.steps, px, w, h, pitch);
+    const r = self.renderer;
+    if (!self.post.ready(r)) return;
+    const target = c.SDL_GetRenderTarget(r) orelse return;
+    var tw: f32 = 0;
+    var th: f32 = 0;
+    _ = c.SDL_GetTextureSize(target, &tw, &th);
+    if (self.post_copy) |t| {
+        var cw: f32 = 0;
+        var ch: f32 = 0;
+        _ = c.SDL_GetTextureSize(t, &cw, &ch);
+        if (cw != tw or ch != th) {
+            c.SDL_DestroyTexture(t);
+            self.post_copy = null;
         }
-    };
-    rewriteTarget(self.renderer, &self.post_tex, Chain{ .steps = steps });
+    }
+    if (self.post_copy == null) {
+        self.post_copy = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_TARGET, @intFromFloat(tw), @intFromFloat(th));
+        const t = self.post_copy orelse return;
+        _ = c.SDL_SetTextureBlendMode(t, c.SDL_BLENDMODE_NONE);
+        _ = c.SDL_SetTextureScaleMode(t, c.SDL_SCALEMODE_NEAREST);
+    }
+    const copy = self.post_copy.?;
+    var blend: c.SDL_BlendMode = c.SDL_BLENDMODE_NONE;
+    _ = c.SDL_GetTextureBlendMode(target, &blend);
+    _ = c.SDL_SetTextureBlendMode(target, c.SDL_BLENDMODE_NONE);
+    _ = c.SDL_SetRenderTarget(r, copy);
+    _ = c.SDL_RenderTexture(r, target, null, null);
+    _ = c.SDL_SetRenderTarget(r, target);
+    _ = c.SDL_SetTextureBlendMode(target, blend);
+    self.post.draw(r, copy, tw, th, steps);
 }
 
 /// The render target read back, changed by `edit.run(pixels, w, h, pitch)` (RGBA) and drawn

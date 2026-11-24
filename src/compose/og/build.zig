@@ -580,9 +580,13 @@ fn kitGame(b: *Builder, texts: []reader.Text, unit_of: []const ?usize, units: []
         const u = units[ui orelse continue];
         for (u.modules) |m| for (m.entities) |e| if (std.mem.eql(u8, e.kind, "game")) {
             var fields: std.ArrayList(ir.Named) = .empty;
-            for (e.fields) |f| if (!(std.mem.eql(u8, f.name, "test_kit") or (room and std.mem.eql(u8, f.name, "party")))) try fields.append(b.a, f);
+            for (e.fields) |f| if (!(std.mem.eql(u8, f.name, "test_kit") or std.mem.eql(u8, f.name, "test_room") or (room and std.mem.eql(u8, f.name, "party")))) try fields.append(b.a, f);
             try fields.append(b.a, .{ .name = "test_kit", .value = try wordList(b.a, k.heroes) });
-            if (room) try fields.append(b.a, .{ .name = "party", .value = try wordList(b.a, k.party) });
+            if (room) {
+                try fields.append(b.a, .{ .name = "party", .value = try wordList(b.a, k.party) });
+                // The room's heroes play free of their story locks (world/start.zig testKit).
+                try fields.append(b.a, .{ .name = "test_room", .value = try intLit(b.a, 1) });
+            }
             var g = e;
             g.fields = fields.items;
             var diag: parser.Diagnostic = .{};
@@ -1013,6 +1017,7 @@ test "build: the test kit — a bare room with the ticked heroes on the heroes' 
     try testing.expect(std.mem.indexOf(u8, room, "weapon og_tk_1: weapons::pistol") != null);
     try testing.expect(std.mem.indexOf(u8, game, "test_kit = [characters::su, characters::ov]") != null);
     try testing.expect(std.mem.indexOf(u8, game, "party = [characters::ov]") != null);
+    try testing.expect(std.mem.indexOf(u8, game, "test_room = 1") != null);
     // A battle played: its own, the kit's things added; the party the game's.
     const r2 = try build(io, a, tmp.dir, .{ .engine = "0.1", .start = .{ .location = .{ .level = "r" } }, .kit = kit });
     try testing.expectEqual(0, r2.errors());
@@ -1021,7 +1026,10 @@ test "build: the test kit — a bare room with the ticked heroes on the heroes' 
     defer pkg.close(io);
     const b2 = try pkg.read(io, a, pkg.find("src/battles/r/battle.ogs", false).?);
     try testing.expect(std.mem.indexOf(u8, b2, "OnShown") != null and std.mem.indexOf(u8, b2, "og_tk_1") != null);
-    try testing.expect(std.mem.indexOf(u8, try pkg.read(io, a, pkg.find("src/game.ogs", false).?), "party = [characters::su, characters::ov]") != null);
+    const g2 = try pkg.read(io, a, pkg.find("src/game.ogs", false).?);
+    try testing.expect(std.mem.indexOf(u8, g2, "party = [characters::su, characters::ov]") != null);
+    // Only the room frees its heroes: a story battle keeps its locks.
+    try testing.expect(std.mem.indexOf(u8, g2, "test_room") == null);
 }
 
 test "build: the reader gives the same model from src/ and from the package" {

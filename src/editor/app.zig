@@ -116,6 +116,8 @@ pub const App = struct {
     /// A document tab to close (its ×), at the next frame's start: closing may save or
     /// discard, which rebuilds what this frame's layout still points into.
     tab_close: ?usize = null,
+    /// `tab_close` without the question on its unsaved edits (what it showed is deleted).
+    tab_close_quiet: bool = false,
     /// History's Return clicked: done at the next frame's start (as tab_close).
     history_go: bool = false,
     /// The catalog replaced mid-frame: freed at the next frame's start (this frame's
@@ -169,6 +171,8 @@ pub const App = struct {
     /// The level stage's background with its post-processing (postpage.stageTexture), and
     /// whether the stage shows it (the toolbar's Post-processing).
     post_stage: @import("postpage.zig").State = .{},
+    /// The game's post-processing shader on the GPU renderer (the previews above draw by it).
+    post_gpu: @import("viewer").gpu_post.Post = .{},
     stage_post: bool = true,
     material: @import("fxmaterial.zig").State = .{},
     reference: @import("reference.zig").State = .{},
@@ -178,8 +182,10 @@ pub const App = struct {
     convert: ?*@import("convert.zig").Job = null,
     /// "Convert to OpenGorky…": its window and run (projconvert.zig).
     proj_convert: ?*@import("projconvert.zig").Window = null,
-    /// Weapon page: which hero strikes in the preview (index among the heroes).
+    /// Weapon page: which hero strikes in the preview (catalog index; not one of them: the first).
     attack_hero: usize = 0,
+    /// Weapon page: the heroes able to strike with the weapon shown (entry_model.strikeOf, this frame).
+    strikers: []const usize = &.{},
     /// A placed enemy's resistance ticks write its own row (else its class's).
     resist_own: bool = true,
     /// The enemy attack struck in the model pane (entry_attacks.zig), by its place in the list.
@@ -275,6 +281,9 @@ pub const App = struct {
     locked: std.StringHashMapUnmanaged(void) = .empty,
     /// A deletion waiting for its confirmation.
     confirm: ?Confirm = null,
+    /// A refusal shown in a window until closed (`alertOf`): its title and text.
+    alert: ?struct { title: []const u8, text: []const u8 } = null,
+    alert_buf: [512]u8 = undefined,
     /// Box contents window (right click on a box).
     box: ?BoxOpen = null,
     /// Trigger window: the area's name (right click on an area).
@@ -417,6 +426,12 @@ pub const App = struct {
         self.status = tx.print(&self.status_buf, m, args);
     }
 
+    /// `setStatus`, and the message in a window (`title` its heading) until closed.
+    pub fn setAlert(self: *App, comptime title: tx.Msg, comptime m: tx.Msg, args: anytype) void {
+        self.setStatus(m, args);
+        self.alert = .{ .title = tx.get(title), .text = tx.print(&self.alert_buf, m, args) };
+    }
+
     /// An edit that failed, in the status line.
     pub fn failed(self: *App, err: anyerror) void {
         self.setStatus(tx.st_set_failed, .{err});
@@ -504,6 +519,7 @@ pub const App = struct {
     // Reloading and undo (app_reload.zig).
     pub const discardDoc = app_reload.discardDoc;
     pub const afterStoreChange = app_reload.afterStoreChange;
+    pub const rebuildCatalog = app_reload.rebuildCatalog;
     pub const save = app_reload.save;
     pub const saveFirst = app_reload.saveFirst;
     pub const saveOnly = app_reload.saveOnly;
@@ -802,7 +818,7 @@ pub const App = struct {
 
     /// A window open over everything: a menu, a question, the box, trigger or check window.
     pub fn modal(self: *const App) bool {
-        return self.menu != null or self.tree_menu != null or self.confirm != null or self.proj_convert != null or self.box != null or self.trigger != null or (if (self.check) |r| r.shown else false);
+        return self.menu != null or self.tree_menu != null or self.confirm != null or self.alert != null or self.proj_convert != null or self.box != null or self.trigger != null or (if (self.check) |r| r.shown else false);
     }
 
     /// Tab `t`'s page is the centre (no code over it).
@@ -935,6 +951,7 @@ pub const App = struct {
             .path => if (self.doc) |d| @import("paths.zig").remove(self, d, n),
             .effect_frame => @import("effectpage.zig").removeFrame(self, cf.index) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
             .model => @import("look_pages.zig").deleteModel(self, n) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
+            .entry => @import("entry_copy.zig").deleteOg(self, n) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
             .purge => if (self.doc) |d| for (d.orphans(self.frame.allocator()) catch &.{}) |o| d.dropFiles(o) catch |err| self.setStatus(tx.st_remove_failed, .{err}),
         }
     }

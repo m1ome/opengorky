@@ -96,6 +96,7 @@ fn layout(app: *App) void {
         if (app.menu) |m| menu(app, a, m);
         treemenu.draw(app, a);
         if (app.confirm) |*cf| confirmWindow(app, cf);
+        if (app.alert) |al| alertWindow(app, al.title, al.text);
         if (app.proj_convert) |w| @import("projconvert.zig").window(app, a, w);
         if (app.box) |b| boxpanel.panel(app, a, b);
         if (app.trigger) |t| triggerpanel.panel(app, a, t);
@@ -206,6 +207,19 @@ fn confirmWindow(app: *App, cf: *const app_mod.Confirm) void {
     gui.spacer();
     if (gui.toolButton(app, "confirm_no", .x, tx.get(tx.cancel), false, false)) app.confirm = null;
     if (gui.toolButton(app, "confirm_yes", .trash_2, tx.get(tx.cm_delete), false, true)) app.confirmed();
+    clay.close();
+    clay.close();
+    clay.close();
+}
+
+/// A refusal (`App.setAlert`): its text and Close (Enter, Esc, a click outside).
+fn alertWindow(app: *App, title: []const u8, text: []const u8) void {
+    _ = gui.modal(app, "alert", .{ .w = lay.width.dialog, .title = title, .icon = .box, .icon_color = theme.warn, .close = false, .shade = true });
+    gui.modalBody(lay.space.md);
+    gui.txtWrap(text, .body, theme.text, font_mod.regular);
+    gui.row(lay.space.sm);
+    gui.spacer();
+    if (gui.toolButton(app, "alert_ok", .check, tx.get(tx.close), false, true)) app.alert = null;
     clay.close();
     clay.close();
     clay.close();
@@ -406,6 +420,7 @@ fn statusBar(app: *App, a: Allocator) void {
 
 pub fn frame(app: *App, size: [2]f32, wheel: [2]f32) clay.Commands {
     _ = app.frame.reset(.retain_capacity);
+    @import("model_og.zig").release();
     // The window as it is now (resized, full screen): the confirmation's shade covers it.
     app.size = size;
     @import("convert.zig").poll(app);
@@ -431,7 +446,8 @@ pub fn frame(app: *App, size: [2]f32, wheel: [2]f32) clay.Commands {
     }
     if (app.tab_close) |k| {
         app.tab_close = null;
-        doctabs.close(app, k);
+        doctabs.close(app, k, !app.tab_close_quiet);
+        app.tab_close_quiet = false;
     }
     if (app.history_go) {
         app.history_go = false;
@@ -442,6 +458,10 @@ pub fn frame(app: *App, size: [2]f32, wheel: [2]f32) clay.Commands {
     // The menu and the box window take clicks on them; one elsewhere only closes them.
     // The conversion's window is answered (its shade takes clicks elsewhere).
     if (app.proj_convert != null and app.clicked and !clay.pointerOver(clay.id("projconvert"))) app.clicked = false;
+    if (app.alert != null and app.clicked and !clay.pointerOver(clay.id("alert"))) {
+        app.alert = null;
+        app.clicked = false;
+    }
     if (app.confirm != null and app.clicked and !clay.pointerOver(clay.id("confirm"))) {
         app.confirm = null;
         app.clicked = false;
@@ -672,7 +692,18 @@ pub fn main(init: std.process.Init) !void {
     var window: ?*c.SDL_Window = null;
     var renderer: ?*c.SDL_Renderer = null;
     const flags = c.SDL_WINDOW_RESIZABLE | high_dpi | (if (headless) c.SDL_WINDOW_HIDDEN else 0);
-    if (!c.SDL_CreateWindowAndRenderer(tx.get(tx.title).ptr, win_size[0], win_size[1], flags, &window, &renderer)) return error.SdlWindow;
+    window = c.SDL_CreateWindow(tx.get(tx.title).ptr, win_size[0], win_size[1], flags) orelse return error.SdlWindow;
+    // The GPU renderer where there is a Vulkan or Metal device (the model preview and the
+    // post-processing preview draw on it: viewer/gpu), else the default one (the CPU's).
+    // The device is released after the renderer.
+    const gpu_device = c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV | c.SDL_GPU_SHADERFORMAT_MSL, false, null);
+    defer if (gpu_device) |d| c.SDL_DestroyGPUDevice(d);
+    if (gpu_device) |d| renderer = c.SDL_CreateGPURenderer(d, window);
+    if (renderer == null) renderer = c.SDL_CreateRenderer(window, null);
+    if (renderer == null) {
+        c.SDL_DestroyWindow(window);
+        return error.SdlWindow;
+    }
     // Window (and macOS Dock) icon: assets/icon-editor-256.png, embedded in the binary.
     kit.setWindowIcon(gpa, window.?, @embedFile("icon_png"));
     defer c.SDL_DestroyWindow(window);

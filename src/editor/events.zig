@@ -205,7 +205,9 @@ pub fn keyDown(app: *App, key: c.SDL_KeyboardEvent) void {
     if (key.key == c.SDLK_W and (key.mod & (c.SDL_KMOD_CTRL | c.SDL_KMOD_GUI)) != 0) return @import("doctabs.zig").closeActive(app);
     // Enter and Esc in a window's search are the window's (as its other keys' shortcuts).
     if (textedit.typingIn(app, "window_search") and (key.key == c.SDLK_RETURN or key.key == c.SDLK_KP_ENTER or key.key == c.SDLK_ESCAPE)) app.text_edit = null;
-    if (app.confirm == null and app.pick != null and key.key == c.SDLK_ESCAPE) {
+    if (app.alert != null and (key.key == c.SDLK_RETURN or key.key == c.SDLK_KP_ENTER or key.key == c.SDLK_ESCAPE)) {
+        app.alert = null;
+    } else if (app.confirm == null and app.pick != null and key.key == c.SDLK_ESCAPE) {
         // Esc closes an open list (picker.zig), its search typed into or not.
         if (textedit.typingIn(app, "pick_search")) app.text_edit = null;
         app.pick = null;

@@ -143,6 +143,11 @@ fn sigilValues(a: Allocator, kind: og.script.ir.Sigil, src: Source) ?[]const []c
 pub fn slot(a: Allocator, t: []const u8, i: usize, where: Where, src: Source) ?Slot {
     // The hooks file is a rules file of functions: builtins' values there too.
     if (where.rules) if (rulesValues(a, t, i, src)) |s| return s;
+    if (where.ogs) if (blockString(t, i)) |s| {
+        var r = s;
+        r.vals = src.names(a, .meshes);
+        if (r.vals.len > 0) return r;
+    };
     if (where.ogs) if (blockSlot(a, t, i)) |s| {
         if (s.block_dir.len == 0) return s;
         var r = s;
@@ -446,6 +451,27 @@ fn blockAt(t: []const u8, ls: usize) ?struct { []const u8, usize } {
     return .{ kind, open };
 }
 
+/// In a data block, inside the string of `mesh = "…"` at `i` (a look's model): its slot,
+/// the text after the opening quote (the caller gives it the meshes).
+fn blockString(t: []const u8, i: usize) ?Slot {
+    var q = i;
+    while (q > 0 and t[q - 1] != '"' and t[q - 1] != '\n') q -= 1;
+    if (q == 0 or t[q - 1] != '"') return null;
+    var k = q - 1;
+    while (k > 0 and t[k - 1] == ' ') k -= 1;
+    if (k < 2 or t[k - 1] != '=' or std.mem.indexOfScalar(u8, "=!<>", t[k - 2]) != null) return null;
+    k -= 1;
+    while (k > 0 and t[k - 1] == ' ') k -= 1;
+    var ns = k;
+    while (ns > 0 and code.isIdent(t[ns - 1])) ns -= 1;
+    if (!std.mem.eql(u8, t[ns..k], "mesh")) return null;
+    var ls = ns;
+    while (ls > 0 and t[ls - 1] != '\n') ls -= 1;
+    if (std.mem.trim(u8, t[ls..ns], " \t").len > 0) return null;
+    _ = blockAt(t, ls) orelse return null;
+    return .{ .start = q, .end = i, .quoted = true, .vals = &.{} };
+}
+
 /// In a data block, the value of `field = …` being typed at `i` (a word, bare; an item of
 /// a list: `resist = [fire, |`): what its type takes (foundation/hosts.ogs): an enum's names
 /// (`place`: ItemPlace's), `true`/`false`, a weapon's `class`/`attack_zone` the weapon
@@ -693,6 +719,7 @@ fn fake() Fake {
     f.lists.set(.name_ids, &.{ "107 · Grandma", "107 · Grandma again", "108 · Lucy" });
     f.lists.set(.functions, &.{"MyFunc"});
     f.lists.set(.level_names, &.{"door_1"});
+    f.lists.set(.meshes, &.{ "medusa", "medusa_hd4_2" });
     return f;
 }
 
@@ -717,6 +744,21 @@ test "completion: a call argument's values by its parameter, a sigil's names" {
     try testing.expect(has(slot(a, d, d.len, .{ .ogs = true }, f.src()).?.vals, "intro"));
     const l = "Go(~l\"";
     try testing.expect(has(slot(a, l, l.len, .{ .ogs = true }, f.src()).?.vals, "02__lab"));
+}
+
+test "completion: a look's mesh in quotes: the models" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var f = fake();
+    const t = "look medusa {\n    mesh = \"med";
+    const s = slot(a, t, t.len, .{ .ogs = true }, f.src()).?;
+    try testing.expect(s.quoted and has(s.vals, "medusa_hd4_2"));
+    try testing.expectEqualStrings("med", t[s.start..s.end]);
+    // Another string field, or a mesh outside a data block: not the models.
+    const o = "look medusa {\n    portrait = \"";
+    try testing.expect(slot(a, o, o.len, .{ .ogs = true }, f.src()) == null);
+    try testing.expect(blockString("mesh = \"", 8) == null);
 }
 
 test "completion: a rules reference's names (one per classic_id), a block reference's blocks" {

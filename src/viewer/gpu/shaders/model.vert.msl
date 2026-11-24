@@ -1,0 +1,69 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct _36
+{
+    uint _m0[2];
+};
+
+struct _79
+{
+    float2 _m0;
+};
+
+struct main0_out
+{
+    float2 m_107 [[user(locn0)]];
+    float3 m_112 [[user(locn1)]];
+    float m_116 [[user(locn2)]];
+    float4 gl_Position [[position]];
+};
+
+struct main0_in
+{
+    float3 m_74 [[attribute(0)]];
+    float2 m_109 [[attribute(1)]];
+    float3 m_113 [[attribute(2)]];
+};
+
+vertex main0_out main0(main0_in in [[stage_in]], constant _79& _81 [[buffer(0)]], const device _36& _38 [[buffer(1)]])
+{
+    main0_out out = {};
+    uint _149;
+    if ((_38._m0[0] & 2147483648u) != 0u)
+    {
+        _149 = _38._m0[0] & 2147483647u;
+    }
+    else
+    {
+        _149 = ~_38._m0[0];
+    }
+    float _133 = as_type<float>(_149);
+    uint _150;
+    if ((_38._m0[1] & 2147483648u) != 0u)
+    {
+        _150 = _38._m0[1] & 2147483647u;
+    }
+    else
+    {
+        _150 = ~_38._m0[1];
+    }
+    float _53 = as_type<float>(_150) - _133;
+    float _151;
+    if (_53 > 0.0)
+    {
+        _151 = 0.999000012874603271484375 / _53;
+    }
+    else
+    {
+        _151 = 0.0;
+    }
+    out.gl_Position = float4(((in.m_74.x / _81._m0.x) * 2.0) - 1.0, 1.0 - ((in.m_74.y / _81._m0.y) * 2.0), (in.m_74.z - _133) * _151, 1.0);
+    out.m_107 = in.m_109;
+    out.m_112 = in.m_113;
+    out.m_116 = in.m_74.z;
+    return out;
+}
+

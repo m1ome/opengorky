@@ -6,9 +6,10 @@ const std = @import("std");
 const og = @import("opengorky");
 const c = @import("sdl");
 
-const Part = enum { update, layer_begin, shadow_cast, models, shadow_mix, upload, rest, present };
+/// `effects`: billboards and attachment-point effects; `gpu`: the GPU pass's frame (--renderer gpu).
+const Part = enum { update, layer_begin, shadow_cast, models, shadow_mix, effects, gpu, upload, rest, present };
 
-const names = [_][]const u8{ "update", "begin", "shadow", "models", "mix", "upload", "rest", "present" };
+const names = [_][]const u8{ "update", "begin", "shadow", "models", "mix", "effects", "gpu", "upload", "rest", "present" };
 
 /// Sums over the window (SDL counter ticks) and frame count.
 var sums: [names.len]u64 = @splat(0);
@@ -47,8 +48,9 @@ pub fn endFrame() void {
     last_frame = t;
     if (frames < 30) return;
     // `rest` is measured whole (all drawing), without the actor layer parts.
-    const inner = sums[1] + sums[2] + sums[3] + sums[4] + sums[5];
-    sums[6] -|= inner;
+    var inner: u64 = 0;
+    for (sums[@backingInt(Part.layer_begin)..@backingInt(Part.rest)]) |s| inner += s;
+    sums[@backingInt(Part.rest)] -|= inner;
     for (&avg, sums, &total) |*a, s, *tt| {
         a.* = ms(s) / og.num.toF32(frames);
         tt.* += s;

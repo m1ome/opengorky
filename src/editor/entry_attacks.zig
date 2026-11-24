@@ -243,6 +243,7 @@ pub fn attacksOf(app: *App, a: Allocator, e: Entry, who: rules.Who) []Attack {
 
 /// classic_id of weapon class `class` (`classes\<class>.ss`, or `.s` for a cw_ one).
 pub fn weaponId(app: *App, class: []const u8) i32 {
+    if (app.ogLayout()) return og.core.entity.idOf(class) orelse 0;
     var buf: [128]u8 = undefined;
     for ([_][]const u8{ ".ss", ".s" }) |ext| {
         const f = app.store.file(common_archive, std.fmt.bufPrint(&buf, "classes\\{s}{s}", .{ class, ext }) catch continue) catch continue;
@@ -451,16 +452,11 @@ pub fn strikeShown(app: *App, a: Allocator, e: Entry, who: rules.Who) ?Struck {
 const Struck = struct { slot: []const u8, held: preview.Held, special: i32 };
 
 /// Attack `at` of the enemy `who` as the preview strikes it; null: it strikes by the hero table.
-fn strikeOf(gpa: Allocator, who: rules.Who, at: Attack) ?Struck {
+pub fn strikeOf(gpa: Allocator, who: rules.Who, at: Attack) ?Struck {
     const row = attackRow(who, at) orelse return null;
     const fx_ = @import("preview_fx.zig");
     const wait = row.hit_delay.ticks();
-    const s: fx_.Strike = .{
-        .fx = fx_.fxOf(gpa, who, .{ .id = at.id, .class = at.class }, 0, null),
-        .hero = who.id,
-        .hit = og.combat.anim.hitFrame(wait),
-        .pre = if (row.flash_delay) |p| og.combat.anim.hitFrame(p.ticks()) else null,
-    };
+    const s = fx_.strikeOf(gpa, .{ .who = who, .weapon = .{ .id = at.id, .class = at.class } }, og.combat.anim.hitFrame(wait), if (row.flash_delay) |p| og.combat.anim.hitFrame(p.ticks()) else null);
     return .{ .slot = row.anim, .held = .{ .mesh = "", .link = "", .strike = s }, .special = og.core.entity.refId(row.strike, row.strike_class) };
 }
 

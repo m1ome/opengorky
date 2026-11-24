@@ -61,6 +61,10 @@ pub fn look(app: *App, a: Allocator, act_text: []const u8, want: ?[]const u8, he
     // OpenGorky: a slot's animation the model lacks shows an idle, as the game draws it.
     const drawn = if (app.ogLayout()) @import("entry_anims.zig").idleInstead(app, a, act_text, anims, file) orelse file else file;
     const tex = app.preview.draw(app.gpa, app.io, app.dat, app.r, .{ .ctx = app, .get = overlayGet }, mesh, drawn, held, ridersOn(app, a, riders, slot), px);
+    // Stopped: what it was playing stops too (a long sound would play on).
+    const playing = app.preview.paused == null;
+    if (app.preview.was_playing and !playing) app.player.stopAll();
+    app.preview.was_playing = playing;
     // The strike's effect sounds and the riders' frame sounds, as the model's (soundsBlock).
     if (!app.player.muted) for (app.preview.fx_sounds) |n| app.player.play(app, n);
     for (app.preview.riders_shown) |rs| {
@@ -101,37 +105,99 @@ pub fn ridersOn(app: *App, a: Allocator, riders: []const catalog.Rider, slot: []
 pub const Strike = struct { hero_text: []const u8, slot: []const u8, held: ?preview.Held, info: []const u8 };
 
 pub fn strikeOf(app: *App, a: Allocator, text: []const u8, class: []const u8) ?Strike {
-    const heroes = heroEntries(app, a);
-    if (heroes.len == 0) return null;
-    const hi = heroes[@min(app.attack_hero, heroes.len - 1)];
-    const he = app.catalog.entries.items[hi];
-    const hf = fileOf(app, he) orelse return null;
     const og_project = app.ogLayout();
-    // OpenGorky: the hero's look block binds its animations; the numbers the reader's.
-    const ht = if (og_project) lookText(app, hf) orelse return null else app.store.text(hf);
-    const hero_id: i32 = if (og_project) og.core.entity.idOf(he.class) orelse 0 else @intFromFloat(model.textNum(app, ht, "classic_id") orelse 0);
     const weapon_id: i32 = if (og_project) og.core.entity.idOf(class) orelse 0 else @intFromFloat(model.textNum(app, text, "classic_id") orelse 0);
-    const hero_who: og.rules.Who = .{ .id = hero_id, .class = if (og_project) he.class else "" };
     const weapon_who: og.rules.Who = .{ .id = weapon_id, .class = if (og_project) class else "" };
-    const row = og.battle.attacks.heroAttack(hero_who, weapon_who);
-    const at = if (og_project) @import("entry_tables.zig").scriptOver(row, text) else row;
-    const two = (model.textNum(app, text, "two_handed") orelse 0) == 1;
-    // Two-handed: the stance-1 animation (`attack_rifle/1` → g_rifle) if the hero has it.
-    var slot: []const u8 = at.anim;
-    if (two) {
-        const s1 = std.fmt.allocPrint(a, "{s}/1", .{at.anim}) catch at.anim;
-        for (preview.anims(a, ht)) |an| if (std.mem.eql(u8, an.slot, s1)) {
-            slot = s1;
-        };
+    const heroes = strikers(app, a, text, class, weapon_who);
+    app.strikers = heroes;
+    if (heroes.len == 0) return null;
+    const hi = for (heroes) |h| {
+        if (h == app.attack_hero) break h;
+    } else heroes[0];
+    const he = app.catalog.entries.items[hi];
+    const h = heroWho(app, he) orelse return null;
+    const ht = h.text;
+    const hero_who = h.who;
+    // Striking by its own rows (Medusa): its attack with this weapon, as its enemy side's page shows it.
+    if (og.core.entity.heroOf(hero_who).own_attacks) {
+        const at = ownAttack(app, a, hero_who, class) orelse return null;
+        const st = ea.strikeOf(app.gpa, hero_who, at) orelse return null;
+        return .{ .hero_text = ht, .slot = st.slot, .held = st.held, .info = tx.alloc(a, tx.atk_own, .{st.slot}) };
     }
+    const at = heroStrike(app, text, weapon_who, hero_who);
+    const two = (model.textNum(app, text, "two_handed") orelse 0) == 1;
+    const slot = heroSlot(a, ht, at.anim, two) orelse at.anim;
     const wait: i32 = @as(i32, @intCast(at.wait)) + at.extra;
     // What the exe shows of the strike by the weapon's effects id: the flash, projectile
     // and hit (fx/hits.zig, fx/launch.zig), at the hit's frame.
-    const fx = @import("preview_fx.zig").fxOf(app.gpa, hero_who, weapon_who, @intFromFloat(model.textNum(app, text, "effects_from") orelse 0), model.textStr(app, text, "projectile"));
-    const strike: @import("preview_fx.zig").Strike = .{ .fx = fx, .hero = hero_id, .hit = og.combat.anim.hitFrame(@intCast(@max(0, wait))), .pre = if (at.pre) |p| og.combat.anim.hitFrame(p) else null };
+    const src: @import("preview_fx.zig").Src = .{ .who = hero_who, .weapon = weapon_who, .fx_as = @intFromFloat(model.textNum(app, text, "effects_from") orelse 0), .projectile = model.textStr(app, text, "projectile") };
+    const strike = @import("preview_fx.zig").strikeOf(app.gpa, src, og.combat.anim.hitFrame(@intCast(@max(0, wait))), if (at.pre) |p| og.combat.anim.hitFrame(p) else null);
     // Nothing in hand (the satellite radio): the strike's effects alone.
     const held: ?preview.Held = if (model.textStr(app, text, "mesh")) |m| .{ .mesh = m, .link = if (two) "two_hands" else "one_hand", .strike = strike } else .{ .mesh = "", .link = "", .strike = strike };
     return .{ .hero_text = ht, .slot = slot, .held = held, .info = tx.alloc(a, tx.atk_info, .{ slot, wait, tx.get(if (two) tx.atk_two else tx.atk_one) }) };
+}
+
+/// A hero's look text (its animations) and who it is to the rules.
+fn heroWho(app: *App, he: catalog.Entry) ?struct { text: []const u8, who: og.rules.Who } {
+    const hf = fileOf(app, he) orelse return null;
+    // OpenGorky: the hero's look block binds its animations; the numbers the reader's.
+    if (app.ogLayout()) return .{ .text = lookText(app, hf) orelse return null, .who = .{ .id = og.core.entity.idOf(he.class) orelse 0, .class = he.class } };
+    const ht = app.store.text(hf);
+    return .{ .text = ht, .who = .{ .id = @intFromFloat(model.textNum(app, ht, "classic_id") orelse 0) } };
+}
+
+/// The hero table's strike of `hero` with the weapon (its block `text`), the weapon's own numbers over it.
+fn heroStrike(app: *App, text: []const u8, weapon: og.rules.Who, hero: og.rules.Who) og.battle.attacks.HeroAttack {
+    const row = og.battle.attacks.heroAttack(hero, weapon);
+    return if (app.ogLayout()) @import("entry_tables.zig").scriptOver(row, text) else row;
+}
+
+/// The animation slot `anim` in look `ht` (two-handed: the stance-1 one, `attack_rifle/1`
+/// → g_rifle, if it has it); null: the look has neither.
+fn heroSlot(a: Allocator, ht: []const u8, anim: []const u8, two: bool) ?[]const u8 {
+    const s1 = if (two) std.fmt.allocPrint(a, "{s}/1", .{anim}) catch anim else anim;
+    var plain = false;
+    for (preview.anims(a, ht)) |an| {
+        if (std.mem.eql(u8, an.slot, s1)) return s1;
+        if (std.mem.eql(u8, an.slot, anim)) plain = true;
+    }
+    return if (plain) anim else null;
+}
+
+/// Who strikes with the weapon (block `text`, class `class`): a hero of the hero table
+/// with a row for this weapon and the row's animation in its look; one striking by its
+/// own rows (Medusa) when its enemy side holds the weapon.
+fn strikers(app: *App, a: Allocator, text: []const u8, class: []const u8, weapon: og.rules.Who) []const usize {
+    var out: std.ArrayList(usize) = .empty;
+    const two = (model.textNum(app, text, "two_handed") orelse 0) == 1;
+    for (app.catalog.entries.items, 0..) |e, hi| {
+        if (e.kind != .hero) continue;
+        const h = heroWho(app, e) orelse continue;
+        const fits = if (og.core.entity.heroOf(h.who).own_attacks) ownAttack(app, a, h.who, class) != null else blk: {
+            // The exe's rifle fallback (no row for the weapon at all) is not a strike with it.
+            const row = og.rules.heroAttackRow(weapon, h.who) orelse break :blk false;
+            if (og.rules.keyMatch(row.*, "weapon", weapon) == null) break :blk false;
+            break :blk heroSlot(a, h.text, heroStrike(app, text, weapon, h.who).anim, two) != null;
+        };
+        if (fits) out.append(a, hi) catch {};
+    }
+    return out.items;
+}
+
+/// Attack with weapon `class` of a hero striking by its own rows (Medusa), as its enemy
+/// side (the enemy of its class) holds it (catalog: its fighter block's weapons) or its
+/// rows give it; null: it does not.
+fn ownAttack(app: *App, a: Allocator, who: og.rules.Who, class: []const u8) ?ea.Attack {
+    const want = @import("entry_rules.zig").bareClass(class);
+    const og_project = app.ogLayout();
+    for (app.catalog.entries.items) |x| {
+        if (x.kind != .enemy) continue;
+        const f = fileOf(app, x) orelse continue;
+        const w = entries.enemyWho(app, x, app.store.text(f));
+        if (if (og_project) !std.mem.eql(u8, w.class, who.class) else w.id != who.id) continue;
+        for (ea.attacksOf(app, a, x, w)) |at| if (std.ascii.eqlIgnoreCase(@import("entry_rules.zig").bareClass(at.class), want)) return at;
+    }
+    return null;
 }
 
 /// OpenGorky: the text of fighter block file `file`'s look (`look = looks::sullivan`: its
@@ -157,13 +223,17 @@ pub fn heroEntries(app: *App, a: Allocator) []const usize {
 }
 
 /// Bottom left on a weapon's page: who strikes with it in the preview.
-fn heroList(app: *App, a: Allocator) void {
+fn heroList(app: *App) void {
     clay.openScroll(.{ .id = clay.id("atk_heroes"), .layout = .{ .sizing = .{ .width = clay.grow(), .height = clay.grow() }, .layoutDirection = ui.CLAY_TOP_TO_BOTTOM, .padding = .{ .left = lay.space.sm, .top = lay.space.xs } } });
     gui.txt(tx.get(tx.atk_who), .body, theme.dim, font_mod.bold);
-    for (heroEntries(app, a), 0..) |hi, k| {
+    const list = app.strikers;
+    const cur = for (list) |h| {
+        if (h == app.attack_hero) break h;
+    } else if (list.len > 0) list[0] else 0;
+    for (list, 0..) |hi, k| {
         const e = app.catalog.entries.items[hi];
-        const sel = k == @min(app.attack_hero, heroEntries(app, a).len - 1);
-        if (gui.listRow(app, clay.idi("atk_hero", @intCast(k)), .{ .selected = sel, .h = lay.height.small, .rounded = false, .bg = theme.bg })) app.attack_hero = k;
+        const sel = hi == cur;
+        if (gui.listRow(app, clay.idi("atk_hero", @intCast(k)), .{ .selected = sel, .h = lay.height.small, .rounded = false, .bg = theme.bg })) app.attack_hero = hi;
         gui.txt(if (e.title.len > 0) e.title else e.id, .label, theme.text, if (sel) font_mod.bold else font_mod.regular);
         gui.txt(e.id, .caption, theme.dim, font_mod.regular);
         clay.close();
@@ -184,7 +254,7 @@ pub fn lookStage(app: *App, a: Allocator, l: Look, act: ?[]const u8, info: ?[]co
     // At most 45% of the centre: the sounds beside it keep room in a narrow window.
     const list_w = @min(app.pane(.entries), centre * 0.45);
     clay.open(.{ .layout = .{ .sizing = .{ .width = clay.fixed(list_w), .height = clay.grow() }, .layoutDirection = ui.CLAY_TOP_TO_BOTTOM } });
-    if (act) |t| @import("entry_anims.zig").list(app, a, t, l.mesh, l.file) else heroList(app, a);
+    if (act) |t| @import("entry_anims.zig").list(app, a, t, l.mesh, l.file) else heroList(app);
     clay.close();
     app.splitter(.entries, false, 1, 0);
     // The rest, as a bound: its timeline is as wide as this, not as its content.
@@ -518,8 +588,8 @@ pub fn glbFailed(app: *App, err: anyerror) void {
         if (std.mem.eql(u8, ge[0], @errorName(err))) break ge[1];
     } else tx.glb_other;
     // Past the exe's limits in a Classic project: the way is conversion, not splitting.
-    if (!app.ogLayout()) for (exe_limits) |n| if (std.mem.eql(u8, n, @errorName(err))) return app.setStatus(tx.st_glb_failed, .{ tx.get(tx.glb_classic), err });
-    app.setStatus(tx.st_glb_failed, .{ tx.get(why), err });
+    if (!app.ogLayout()) for (exe_limits) |n| if (std.mem.eql(u8, n, @errorName(err))) return app.setAlert(tx.glb_failed_title, tx.st_glb_failed, .{ tx.get(tx.glb_classic), err });
+    app.setAlert(tx.glb_failed_title, tx.st_glb_failed, .{ tx.get(why), err });
 }
 
 /// The model block: its height, centre, rotation and attach points, added and removed

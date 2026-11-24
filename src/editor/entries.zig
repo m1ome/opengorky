@@ -422,7 +422,7 @@ fn entryInfo(idx: usize, app: *App, list: *info.List) void {
     }
     switch (e.kind) {
         // Its attacks' pages (`wp_x.ss` → entry `wp_x`).
-        .enemy => for (e.weapons.items) |w| list.add(.{ .group = .refs, .text = w, .to = if (entryById(app, std.fs.path.stem(w))) |i| .{ .entry = i } else |_| .{ .code = .{ .archive = common_archive, .entry = list.fmt("classes\\{s}", .{w}) } }, .icon = .swords }),
+        .enemy => for (e.weapons.items) |w| list.add(.{ .group = .refs, .text = w, .to = if (entryById(app, entry_rules.bareClass(w))) |i| .{ .entry = i } else |_| .{ .code = .{ .archive = common_archive, .entry = list.fmt("classes\\{s}", .{w}) } }, .icon = .swords }),
         .hero => if (std.mem.eql(u8, e.archive, common_archive)) list.add(.{ .group = .party, .text = tx.get(tx.info_party_start) }) else {
             const n = list.rows.items.len;
             info.joins(app, list, e.id);
@@ -452,7 +452,7 @@ fn entryInfo(idx: usize, app: *App, list: *info.List) void {
             for (app.catalog.entries.items, 0..) |x, i| {
                 if (x.kind != .enemy and x.kind != .hero) continue;
                 const holds = for (x.weapons.items) |w| {
-                    if (std.ascii.eqlIgnoreCase(std.fs.path.stem(w), og.rules.stem(e.entry))) break true;
+                    if (std.ascii.eqlIgnoreCase(entry_rules.bareClass(w), og.rules.stem(e.entry))) break true;
                 } else if (x.kind == .hero) if (fileOf(app, x)) |f| std.ascii.findIgnoreCase(app.store.text(f), file_name) != null else false else false;
                 if (holds) list.add(.{ .group = .used, .text = info.entryText(list, x), .to = .{ .entry = i }, .icon = .user });
             }

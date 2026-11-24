@@ -38,6 +38,9 @@ pub const State = struct {
     still: ?og.image.Image = null,
     of: u64 = 0,
     tex: ?*c.SDL_Texture = null,
+    /// On the GPU renderer: the still uploaded once, drawn through the game's shader into
+    /// `tex` (a render target there).
+    src: ?*c.SDL_Texture = null,
     key: u64 = 0,
     /// When `tex` was last made (SDL ticks): a slider being dragged remakes it at most
     /// every `drag_ms`.
@@ -110,7 +113,7 @@ fn put(app: *App, ss: []const Post) !void {
 pub fn add(app: *App, program: []const u8) !void {
     const p = std.meta.stringToEnum(@FieldType(Post, "program"), program) orelse return error.NoSuchProgram;
     const ss = steps(app);
-    try put(app, try std.mem.concat(app.frame.allocator(), Post, &.{ ss, &.{.{ .program = p, .k = if (p == .grade) 1 else 0.5 }} }));
+    try put(app, try std.mem.concat(app.frame.allocator(), Post, &.{ ss, &.{.{ .program = p, .k = if (p == .grade or p == .hsl) 1 else 0.5 }} }));
     app.post.sel = ss.len;
 }
 
@@ -199,12 +202,12 @@ fn stepRows(app: *App, a: Allocator, shown: []Post, sel: ?usize) void {
         const on = sel == k;
         if (gui.listRow(app, clay.idi("post_row", @intCast(k)), .{ .selected = on })) app.post.sel = if (on) null else k;
         gui.txt(std.fmt.allocPrint(a, "{d}. {t}", .{ k + 1, s.program }) catch "", .body, theme.text, if (on) font_mod.bold else font_mod.regular);
-        gui.txtClip(if (s.program == .grade) std.fmt.allocPrint(a, "k {d:.2} · rgb {d:.2} {d:.2} {d:.2}", .{ s.k, s.rgb[0], s.rgb[1], s.rgb[2] }) catch "" else std.fmt.allocPrint(a, "k {d:.2}", .{s.k}) catch "", .caption, theme.dim, font_mod.regular);
+        gui.txtClip(if (s.program == .grade or s.program == .hsl) std.fmt.allocPrint(a, "k {d:.2} · rgb {d:.2} {d:.2} {d:.2}", .{ s.k, s.rgb[0], s.rgb[1], s.rgb[2] }) catch "" else std.fmt.allocPrint(a, "k {d:.2}", .{s.k}) catch "", .caption, theme.dim, font_mod.regular);
         clay.close();
     }
     if (shown.len == 0) gui.note(tx.get(tx.post_empty));
     // A new step of each program; the shown one's moves.
-    var labels: [6][]const u8 = undefined;
+    var labels: [programs.len + 3][]const u8 = undefined;
     for (programs, 0..) |p, k| labels[k] = tx.alloc(a, tx.post_add, .{p});
     var n: usize = programs.len;
     if (sel != null) {
@@ -224,8 +227,13 @@ fn stepRows(app: *App, a: Allocator, shown: []Post, sel: ?usize) void {
     if (gui.segmented(app, "post_program", programs, @backingInt(s.program))) |k| setStep(app, i, "program", programs[k]) catch |err| app.failed(err);
     clay.close();
     slider(app, a, i, 0, "k", s.k);
-    if (s.program == .grade) for ([_][]const u8{ "r", "g", "b" }, 0..) |l, ch| slider(app, a, i, @intCast(ch + 1), l, s.rgb[ch]);
-    gui.note(tx.get(if (s.program == .grade) tx.post_grade else if (s.program == .vignette) tx.post_vignette else tx.post_scanlines));
+    if (s.program == .grade or s.program == .hsl) for (if (s.program == .hsl) [_][]const u8{ "h", "s", "l" } else [_][]const u8{ "r", "g", "b" }, 0..) |l, ch| slider(app, a, i, @intCast(ch + 1), l, s.rgb[ch]);
+    gui.note(tx.get(switch (s.program) {
+        .grade => tx.post_grade,
+        .vignette => tx.post_vignette,
+        .scanlines => tx.post_scanlines,
+        .hsl => tx.post_hsl,
+    }));
 }
 
 /// Channel `ch` (0: k, 1…3: r, g, b) of step `i` on a 0…2 slider: shown while dragged,
@@ -272,13 +280,16 @@ fn otherStill(app: *App, name: []const u8) ?og.image.Image {
 pub fn deinit(app: *App) void {
     drop(app, &app.post);
     drop(app, &app.post_stage);
+    app.post_gpu.deinit(app.r);
 }
 
 fn drop(app: *App, st: *State) void {
     if (st.still) |*img| img.deinit(app.gpa);
     if (st.tex) |t| c.SDL_DestroyTexture(t);
+    if (st.src) |t| c.SDL_DestroyTexture(t);
     st.still = null;
     st.tex = null;
+    st.src = null;
 }
 
 /// The level stage's background with the chain in force on level `d` run over it (the
@@ -325,6 +336,10 @@ fn texture(app: *App, st: *State, name: []const u8, shown: []const Post) ?*c.SDL
     const now = c.SDL_GetTicks();
     if (st.tex != null and app.slider_drag != null and now -% st.made_ms < drag_ms) return st.tex;
     st.made_ms = now;
+    if (gpuTexture(app, st, img, shown)) |t| {
+        st.key = key;
+        return t;
+    }
     if (st.tex == null) st.tex = c.SDL_CreateTexture(app.r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_STREAMING, @intCast(img.width), @intCast(img.height));
     const t = st.tex orelse return null;
     const px = app.gpa.dupe(u8, img.pixels) catch return null;
@@ -332,6 +347,28 @@ fn texture(app: *App, st: *State, name: []const u8, shown: []const Post) ?*c.SDL
     if (!st.before) og.render.post.apply(shown, px, img.width, img.height, img.width * 4);
     _ = c.SDL_UpdateTexture(t, null, px.ptr, @intCast(img.width * 4));
     st.key = key;
+    return t;
+}
+
+/// On the GPU renderer the still drawn through the game's shader (viewer/gpu/post.zig, as
+/// the game draws the chain) into `st.tex`; null on another renderer (render/post.zig then).
+fn gpuTexture(app: *App, st: *State, img: og.image.Image, shown: []const Post) ?*c.SDL_Texture {
+    const r = app.r;
+    if (!app.post_gpu.ready(r)) return null;
+    const w: c_int = @intCast(img.width);
+    const h: c_int = @intCast(img.height);
+    if (st.src == null) {
+        st.src = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_STATIC, w, h);
+        const s = st.src orelse return null;
+        _ = c.SDL_SetTextureBlendMode(s, c.SDL_BLENDMODE_NONE);
+        _ = c.SDL_UpdateTexture(s, null, img.pixels.ptr, w * 4);
+    }
+    if (st.tex == null) st.tex = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_TARGET, w, h);
+    const t = st.tex orelse return null;
+    const old = c.SDL_GetRenderTarget(r);
+    _ = c.SDL_SetRenderTarget(r, t);
+    if (st.before) _ = c.SDL_RenderTexture(r, st.src, null, null) else app.post_gpu.draw(r, st.src.?, @floatFromInt(w), @floatFromInt(h), shown);
+    _ = c.SDL_SetRenderTarget(r, old);
     return t;
 }
 

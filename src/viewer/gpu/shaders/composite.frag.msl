@@ -1,0 +1,96 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct _111
+{
+    float4 _m0;
+    float4 _m1;
+    float4 _m2;
+    float4 _m3;
+    float4 _m4;
+    float4 _m5;
+    float4 _m6;
+    float4 _m7;
+};
+
+struct _222
+{
+    float _m0[64];
+};
+
+struct main0_out
+{
+    float4 m_383 [[color(0)]];
+};
+
+fragment main0_out main0(constant _111& _113 [[buffer(0)]], const device _222& _224 [[buffer(1)]], texture2d<float> _43 [[texture(0)]], texture2d<float> _362 [[texture(1)]], texture2d<float> _352 [[texture(2)]], sampler _43Smplr [[sampler(0)]], sampler _362Smplr [[sampler(1)]], sampler _352Smplr [[sampler(2)]], float4 gl_FragCoord [[position]])
+{
+    main0_out out = {};
+    int2 _192 = int2(gl_FragCoord.xy);
+    int2 _209 = _192 / int2(int(_113._m0.z));
+    int _236 = (min((_209.y / max(1, (int(_113._m0.y) / 8))), 7) * 8) + min((_209.x / max(1, (int(_113._m0.x) / 8))), 7);
+    if (_224._m0[_236] > 9.9999996802856924650656260769173e+37)
+    {
+        discard_fragment();
+    }
+    float _400 = (float(_192.x) + 0.5) / _113._m0.z;
+    float _408 = ((1.0 + ((_400 * 510.0) / _113._m0.x)) * 0.5) - 0.5;
+    float _410 = floor(_408);
+    float _413 = _408 - _410;
+    float _427 = (float(_192.y) + 0.5) / _113._m0.z;
+    float _435 = ((1.0 + ((_427 * 510.0) / _113._m0.y)) * 0.5) - 0.5;
+    float _437 = floor(_435);
+    float _440 = _435 - _437;
+    int _452 = int(fast::clamp(_410, 0.0, 255.0)) * 2;
+    int _454 = int(fast::clamp(_437, 0.0, 255.0)) * 2;
+    int2 _455 = int2(_452, _454);
+    float _296 = 1.0 - _413;
+    int _486 = int(fast::clamp(_410 + 1.0, 0.0, 255.0)) * 2;
+    int2 _489 = int2(_486, _454);
+    int _522 = int(fast::clamp(_437 + 1.0, 0.0, 255.0)) * 2;
+    int2 _523 = int2(_452, _522);
+    int2 _557 = int2(_486, _522);
+    float _327 = ((((((_43.read(uint2(_455), 0).x + _43.read(uint2((_455 + int2(1, 0))), 0).x) + _43.read(uint2((_455 + int2(0, 1))), 0).x) + _43.read(uint2((_455 + int2(1))), 0).x) * _296) + ((((_43.read(uint2(_489), 0).x + _43.read(uint2((_489 + int2(1, 0))), 0).x) + _43.read(uint2((_489 + int2(0, 1))), 0).x) + _43.read(uint2((_489 + int2(1))), 0).x) * _413)) * (1.0 - _440)) + ((((((_43.read(uint2(_523), 0).x + _43.read(uint2((_523 + int2(1, 0))), 0).x) + _43.read(uint2((_523 + int2(0, 1))), 0).x) + _43.read(uint2((_523 + int2(1))), 0).x) * _296) + ((((_43.read(uint2(_557), 0).x + _43.read(uint2((_557 + int2(1, 0))), 0).x) + _43.read(uint2((_557 + int2(0, 1))), 0).x) + _43.read(uint2((_557 + int2(1))), 0).x) * _413)) * _440);
+    if (_327 <= 0.0)
+    {
+        discard_fragment();
+    }
+    float _341 = _427 + _113._m1.y;
+    float _651;
+    do
+    {
+        if (_113._m0.w < 0.5)
+        {
+            _651 = _341 + ((2.0 * _224._m0[_236]) / _113._m2.x);
+            break;
+        }
+        float _629 = (_113._m4.y + (_113._m5.y * (((_400 + _113._m1.x) - _113._m7.z) / _113._m7.x))) + (_113._m6.y * ((_113._m7.w - _341) / _113._m7.y));
+        if (abs(_629) < 9.9999999747524270787835121154785e-07)
+        {
+            _651 = -3.0000000054977557577780399428115e+38;
+            break;
+        }
+        _651 = -(((_224._m0[_236] * _113._m3.w) - _113._m3.y) / _629);
+        break;
+    } while(false);
+    float4 _356 = _352.read(uint2(_192), 0);
+    float _357 = _356.x;
+    float _652;
+    if (_357 > 9.9999996802856924650656260769173e+37)
+    {
+        _652 = _362.read(uint2(_209), 0).x;
+    }
+    else
+    {
+        _652 = _357;
+    }
+    if (((-_651) - _113._m1.w) > _652)
+    {
+        discard_fragment();
+    }
+    out.m_383 = float4(0.0, 0.0, 0.0, fast::clamp((_113._m1.z * _327) * 0.25, 0.0, 1.0));
+    return out;
+}
+

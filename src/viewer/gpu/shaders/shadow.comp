@@ -1,0 +1,84 @@
+#version 450
+// render/layer.zig `castShadow` per vertex, on the posed points (pose.comp): the world
+// point (toWorld, no aspect), from light point `light` onto the floor plane z = zg,
+// projected to the canvas, into the 512×512 mask's coordinates (screen → mask: 1 + x·510/w);
+// the caster's projected box (canvas pixels) grows by it — the tiles its shadow touches.
+layout(local_size_x = 64) in;
+
+#ifdef MSL
+#define RO(i) (i + 1)
+#define RW(i) (i + 2)
+#else
+#define RO(i) (i)
+#define RW(i) (i)
+#endif
+
+layout(std430, set = 0, binding = RO(0)) readonly buffer Posed { vec4 posed[]; };
+layout(std430, set = 1, binding = RW(0)) writeonly buffer Out { vec2 outv[]; };  // mask coordinates
+layout(std430, set = 1, binding = RW(1)) buffer Boxes { uint boxes[]; };         // per caster: min x, min y, max x, max y
+
+layout(set = 2, binding = 0) uniform S {
+    vec4 local0;
+    vec4 local1;
+    vec4 local2;
+    vec4 center_s;    // mesh center; mesh scale
+    vec4 pos_zg;      // placement; the floor height (= pos.z)
+    vec4 light;       // light point; perspective (1) or not
+    vec4 rot;         // cos, sin of the angle; canvas pixels per screen pixel; 0
+    vec4 origin;      // layer origin; kx, ky (canvas → mask)
+    vec4 ortho;       // the isometric camera's cos, sin, k
+    vec4 eye_scale;
+    vec4 fwd;
+    vec4 right;
+    vec4 up;
+    vec4 persp;       // focal, focal_y, cx, cy
+    uvec4 counts;     // vertices, posed base, out base, caster slot
+};
+
+vec3 mulVec(vec3 v) {
+    return vec3(dot(local0.xyz, v), dot(local1.xyz, v), dot(local2.xyz, v));
+}
+
+uint ordered(float f) {
+    uint u = floatBitsToUint(f);
+    return (u & 0x80000000u) != 0u ? ~u : u | 0x80000000u;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= counts.x) return;
+    float s = center_s.w;
+    float ca = rot.x;
+    float sa = rot.y;
+    vec3 lp = mulVec(posed[counts.y + i].xyz) + center_s.xyz;
+    float mx = lp.x * s;
+    float my = lp.z * s;
+    vec3 pos = pos_zg.xyz;
+    vec3 w = vec3(pos.x + mx * ca - my * sa, pos.y + mx * sa + my * ca, pos.z + lp.y * s);
+    // Above the light — no shadow (the ray never reaches the floor).
+    if (w.z >= light.z - 0.5) w.z = light.z - 0.5;
+    float zg = pos_zg.w;
+    float t = (zg - light.z) / (w.z - light.z);
+    vec3 g = vec3(light.x + (w.x - light.x) * t, light.y + (w.y - light.y) * t, zg);
+    float x;
+    float y;
+    if (light.w > 0.5) {
+        vec3 q = vec3(g.x, g.z, g.y) * eye_scale.w;
+        vec3 d = q - eye_scale.xyz;
+        float zc = max(1e-4, dot(d, fwd.xyz));
+        x = persp.z + dot(d, right.xyz) / zc * persp.x;
+        y = persp.w - dot(d, up.xyz) / zc * persp.y;
+    } else {
+        float yy = -ortho.y * g.x + ortho.x * g.y;
+        x = ortho.x * g.x + ortho.y * g.y;
+        y = (yy - g.z) / ortho.z;
+    }
+    float sx = (x - origin.x) * rot.z;
+    float sy = (y - origin.y) * rot.z;
+    outv[counts.z + i] = vec2(1.0 + sx * origin.z, 1.0 + sy * origin.w);
+    uint b = counts.w * 4u;
+    atomicMin(boxes[b + 0u], ordered(sx));
+    atomicMin(boxes[b + 1u], ordered(sy));
+    atomicMax(boxes[b + 2u], ordered(sx));
+    atomicMax(boxes[b + 3u], ordered(sy));
+}

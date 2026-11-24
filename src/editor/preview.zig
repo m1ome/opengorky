@@ -1,6 +1,7 @@
 //! Enemy preview: its model (the look's `meshFile`) posed in an animation at the
-//! game's 30 frames a second, drawn by the engine's rasterizer into a texture
-//! (as `gorky-tool model`, src/tool/models.zig).
+//! game's 30 frames a second, drawn into a texture: on the GPU renderer by the game's
+//! model pass (viewer/gpu/models.zig), else by the engine's rasterizer (as `gorky-tool
+//! model`, src/tool/models.zig); edges only (`wire`) always by the latter.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -9,6 +10,7 @@ const c = @import("sdl");
 const lay = @import("layout.zig");
 const Cache = og.actor.model_cache.Cache;
 const fx = @import("preview_fx.zig");
+const GpuModels = @import("viewer").gpu_models.GpuModels;
 
 /// A weapon in the actor's hand: its model and the actor model's hold point
 /// (`two_hands` for a two-handed item, else `one_hand`; actors.zig in the viewer).
@@ -57,6 +59,11 @@ pub const Preview = struct {
     riders_shown: []const RiderShown = &.{},
     /// Edges only (the concept's Wireframe), no texture.
     wire: bool = false,
+    /// The GPU renderer's model pass (made on the first draw; null on another renderer)
+    /// and the picture it composes into.
+    gpu: ?*GpuModels = null,
+    gpu_tried: bool = false,
+    out: ?*c.SDL_Texture = null,
     /// Global frame shown and the one before it (null: the animation just started),
     /// for its frame sounds.
     frame: u32 = 0,
@@ -64,6 +71,8 @@ pub const Preview = struct {
     drawn_ms: u64 = 0,
     /// Stopped on this frame of the animation (from its first); null — playing.
     paused: ?u32 = 0,
+    /// Playing when last drawn: stopping (any way: the button, a step, the timeline) stops its sounds.
+    was_playing: bool = false,
     /// The shown animation's frame count and the shown frame's place in it.
     frames: u32 = 1,
     at: u32 = 0,
@@ -90,12 +99,16 @@ pub const Preview = struct {
     pub fn deinit(self: *Preview) void {
         self.reload();
         if (self.tex) |t| c.SDL_DestroyTexture(t);
+        if (self.out) |t| c.SDL_DestroyTexture(t);
+        if (self.gpu) |g| g.deinit();
     }
 
     /// Models read again on the next draw (a model edited, undone or saved).
     pub fn reload(self: *Preview) void {
         if (self.sim) |sm| sm.destroy();
         self.sim = null;
+        // Its uploads are keyed by the models' and textures' memory, freed here.
+        if (self.gpu) |g| g.forget();
         if (self.cache) |*cc| {
             self.fx_frames.deinit(cc.gpa);
             self.fx_frames = .{};
@@ -180,7 +193,6 @@ pub const Preview = struct {
 
         const pts = og.actor.skin.pose(arena, model.mesh, model.frames, frame, .row) catch return null;
         // The weapon at the hold point, posed with the hand (render/layer.zig).
-        const Part = struct { m: *const og.actor.model_cache.Model, pts: [][][3]f32 };
         var weapon: ?Part = null;
         if (held) |h| if (model.mesh.holdMode(h.link)) |link| {
             const wm_opt = self.cache.?.get(h.mesh);
@@ -276,6 +288,7 @@ pub const Preview = struct {
             np += 1;
         }
         self.points = self.points_buf[0..np];
+        if (!self.wire) if (self.gpuOf(gpa, r)) |g| return self.drawGpu(g, gpa, arena, r, drawn.items, model, view, cam, .{ cy, sy, 0 }, frame, px);
         var layer = og.render.layer.Layer.initScaled(gpa, px[0], px[1], 1) catch return null;
         defer layer.deinit(gpa);
         layer.textures = &self.textures.?;
@@ -320,7 +333,91 @@ pub const Preview = struct {
         _ = c.SDL_UpdateTexture(t, null, layer.canvas.img.pixels.ptr, @intCast(px[0] * 4));
         return t;
     }
+
+    fn gpuOf(self: *Preview, gpa: Allocator, r: *c.SDL_Renderer) ?*GpuModels {
+        if (!self.gpu_tried) {
+            self.gpu_tried = true;
+            self.gpu = GpuModels.init(gpa, r);
+            if (self.gpu) |g| {
+                const bg = lay.canvas.preview_bg;
+                g.clear = .{ og.num.toF32(bg[0]) / 255, og.num.toF32(bg[1]) / 255, og.num.toF32(bg[2]) / 255, 1 };
+            }
+        }
+        return self.gpu;
+    }
+
+    /// The picture by the GPU's model pass: the models' triangles as the canvas path draws
+    /// them (the preview's view, one shade per face), the strike's effects through the
+    /// layer's sink; the colour, glow and screen targets composed into `out`.
+    fn drawGpu(self: *Preview, g: *GpuModels, gpa: Allocator, arena: Allocator, r: *c.SDL_Renderer, drawn: []const ?Part, model: *const og.actor.model_cache.Model, view: View, cam: og.actor.camera.Camera, right: [3]f32, frame: u32, px: [2]u32) ?*c.SDL_Texture {
+        g.begin(px[0], px[1], 1) catch return null;
+        const sk = g.sink();
+        const light = [3]f32{ 0.4, 0.7, -0.6 };
+        for (drawn) |dd| if (dd) |d| for (d.m.mesh.parts, d.pts, 0..) |part, ppts, pi| {
+            if (part.triangles.len == 0) continue;
+            for (ppts) |*p| p.* = og.actor.model_cache.localPoint(model, p.*);
+            // A vertex per corner: the shade is the face's.
+            const n = part.triangles.len * 3;
+            const pos = arena.alloc([3]f32, n) catch return null;
+            const verts = arena.alloc(og.core.model.Vertex, n) catch return null;
+            const col = arena.alloc([3]f32, n) catch return null;
+            const tris = arena.alloc([3]u32, part.triangles.len) catch return null;
+            for (part.triangles, 0..) |t, ti| {
+                const nrm = og.vec.cross(og.vec.sub(ppts[t[1]], ppts[t[0]]), og.vec.sub(ppts[t[2]], ppts[t[0]]));
+                const len = og.vec.len(nrm);
+                const shade: f32 = if (len > 0) 0.45 + 0.55 * @abs((nrm[0] * light[0] + nrm[1] * light[1] + nrm[2] * light[2]) / len) else 1;
+                for (0..3) |i| {
+                    const k = ti * 3 + i;
+                    pos[k] = view.project(ppts[t[i]]);
+                    verts[k] = part.vertices[t[i]];
+                    col[k] = .{ shade, shade, shade };
+                }
+                const b: u32 = @intCast(ti * 3);
+                tris[ti] = .{ b, b + 1, b + 2 };
+            }
+            sk.part(sk.ctx, .{ .pos = pos, .verts = verts, .col = col, .tris = tris, .two_sided = true, .mips = self.textures.?.partMips(d.m, pi), .alpha = 1, .depth_write = true, .test_bias = 0 });
+        };
+        if (self.sim) |sm| {
+            // The layer only routes the effects to the sink: no canvas of the picture's size.
+            var layer = og.render.layer.Layer.initScaled(gpa, 1, 1, 1) catch return null;
+            defer layer.deinit(gpa);
+            layer.textures = &self.textures.?;
+            layer.sink = sk;
+            sm.draw(arena, &layer, cam, right, &self.cache.?, &self.fx_frames, model, frame);
+        }
+        const bg_depth = arena.alloc(f32, px[0] * px[1]) catch return null;
+        @memset(bg_depth, std.math.inf(f32));
+        const any = g.finish(bg_depth, px[0], px[1], cam, .{ 0, 0 }, null) catch false;
+        if (self.out != null and (self.tex_w != px[0] or self.tex_h != px[1])) {
+            c.SDL_DestroyTexture(self.out);
+            self.out = null;
+        }
+        if (self.out == null) {
+            self.out = c.SDL_CreateTexture(r, c.SDL_PIXELFORMAT_ABGR8888, c.SDL_TEXTUREACCESS_TARGET, @intCast(px[0]), @intCast(px[1]));
+            self.tex_w = px[0];
+            self.tex_h = px[1];
+        }
+        const out = self.out orelse return null;
+        const old = c.SDL_GetRenderTarget(r);
+        var dc: [4]u8 = undefined;
+        _ = c.SDL_GetRenderDrawColor(r, &dc[0], &dc[1], &dc[2], &dc[3]);
+        _ = c.SDL_SetRenderTarget(r, out);
+        const bg = lay.canvas.preview_bg;
+        _ = c.SDL_SetRenderDrawColor(r, bg[0], bg[1], bg[2], 255);
+        _ = c.SDL_RenderClear(r);
+        if (any) for ([_]?*c.SDL_Texture{ g.tex, if (g.glow_used) g.glow_tex else null, if (g.screen_used) g.screen_tex else null }) |t| if (t) |x| {
+            _ = c.SDL_RenderTexture(r, x, null, null);
+        };
+        _ = c.SDL_SetRenderTarget(r, old);
+        _ = c.SDL_SetRenderDrawColor(r, dc[0], dc[1], dc[2], dc[3]);
+        // Run now: the next preview's pass (a thumbnail) reuses the targets read here.
+        _ = c.SDL_FlushRenderer(r);
+        return out;
+    }
 };
+
+/// A model drawn in the preview and its posed points (the weapon's, a rider's at the link).
+const Part = struct { m: *const og.actor.model_cache.Model, pts: [][][3]f32 };
 
 /// Attach point `i` of the model on the picture (pixels) and how far a unit of its offset
 /// x, y, z moves it there (`d`).

@@ -23,6 +23,9 @@ pub const Options = struct {
     no_sfx: bool = false,
     /// Frame detail (1–4); 0 — by window in the game, 1 in shots and runs.
     hires: u32 = 0,
+    /// --renderer cpu|gpu: models drawn by the software rasterizer or the GPU (SDL GPU; the
+    /// CPU one when the GPU device is not there) instead of the `renderer` setting.
+    renderer: ?config.Renderer = null,
     /// --upscale xbr|off: UI upscaling instead of the `upscale` setting.
     upscale: ?config.Upscale = null,
     /// Window size in points (`--window W,H`).

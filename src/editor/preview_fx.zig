@@ -14,9 +14,19 @@ const Cache = og.actor.model_cache.Cache;
 const Camera = og.actor.camera.Camera;
 const Image = og.image.Image;
 
-/// What strikes: the strike's effects (battle/generic.zig fxOf), the attacker's classic_id,
-/// the frames (from the animation's first) of the hit and of the flash before it.
-pub const Strike = struct { fx: og.battle.generic.Fx, hero: i32, hit: u32, pre: ?u32 = null };
+/// What strikes: the strike's effects (battle/generic.zig fxOf; its `weapon` null: the
+/// simulation makes its own, Sim), the attacker's classic_id, the frames (from the
+/// animation's first) of the hit and of the flash before it, and who strikes with what.
+pub const Strike = struct { fx: og.battle.generic.Fx, hero: i32, hit: u32, pre: ?u32 = null, src: Src = .{} };
+
+/// Who strikes with which weapon (classes: rules.classOf, `cw_riffle`), the weapon's
+/// `effects_from` and `projectile`.
+pub const Src = struct { who: og.rules.Who = .{ .id = 0 }, weapon: og.rules.Who = .{ .id = 0 }, fx_as: i32 = 0, projectile: ?[]const u8 = null };
+
+/// Strike `src` with its hit and flash frames, its effects as the battle takes them.
+pub fn strikeOf(gpa: Allocator, src: Src, hit: u32, pre: ?u32) Strike {
+    return .{ .fx = fxOf(gpa, src), .hero = src.who.id, .hit = hit, .pre = pre, .src = src };
+}
 
 /// The aim on the floor: two battle cells ahead (a cell is xSize = 350·aS: speedScale
 /// 0.02·xSize = 7·aS, 0x4b49f0).
@@ -25,21 +35,38 @@ const ahead = 700;
 const max_tail = 300;
 
 /// The strike's effects as the battle takes them (generic.fxOf: the weapon's `fx_as`,
-/// `projectile`, else its classic_id; the rules' stages over them): `who` strikes with
-/// `weapon` (classes: rules.classOf, `cw_riffle`).
-pub fn fxOf(gpa: Allocator, who: og.rules.Who, weapon: og.rules.Who, fx_as: i32, projectile: ?[]const u8) og.battle.generic.Fx {
-    const none: og.battle.generic.Fx = .same(weapon.id, who.id);
-    var wcls: og.script.object.Class = .{ .name = "", .parent = null, .ident = weapon.class };
-    var o: Object = .{ .name = "", .class = &wcls };
+/// `projectile`, else its classic_id; the rules' stages over them). Its `weapon` null:
+/// the objects here live only for this call.
+fn fxOf(gpa: Allocator, src: Src) og.battle.generic.Fx {
+    const none: og.battle.generic.Fx = .same(src.weapon.id, src.who.id);
+    var wcls: og.script.object.Class = undefined;
+    var o: Object = .{ .name = "", .class = undefined };
     defer o.vars.deinit(gpa);
-    var hcls: og.script.object.Class = .{ .name = "", .parent = null, .ident = who.class };
-    var h: Object = .{ .name = "", .class = &hcls };
+    var hcls: og.script.object.Class = undefined;
+    var h: Object = .{ .name = "", .class = undefined };
     defer h.vars.deinit(gpa);
-    h.declare(gpa, "nameid", .{ .type = .int, .value = .{ .int = who.id } }) catch return none;
-    o.declare(gpa, "nameid", .{ .type = .int, .value = .{ .int = weapon.id } }) catch return none;
-    o.declare(gpa, "effects_from", .{ .type = .int, .value = .{ .int = fx_as } }) catch return none;
-    if (projectile) |p| o.declare(gpa, "projectile", .{ .type = .string, .value = .{ .string = p } }) catch return none;
-    return og.battle.generic.fxOf(&h, &o);
+    standIn(gpa, &h, &hcls, src.who) catch return none;
+    weaponObject(gpa, &o, &wcls, src, src.projectile) catch return none;
+    var f = og.battle.generic.fxOf(&h, &o);
+    f.weapon = null;
+    return f;
+}
+
+/// `o` stands in for a game object of `w`: class `cls` of its class's ident, its nameid and
+/// classic_id as a game object has them (world/start.zig) — what the rules (rules.who)
+/// and the fx code read of it.
+fn standIn(gpa: Allocator, o: *Object, cls: *og.script.object.Class, w: og.rules.Who) !void {
+    cls.* = .{ .name = "", .parent = null, .ident = w.class };
+    o.class = cls;
+    try o.declare(gpa, "nameid", .{ .type = .int, .value = .{ .int = w.id } });
+    try o.declare(gpa, "classic_id", .{ .type = .int, .value = .{ .int = w.id } });
+}
+
+/// `o` the striking weapon of `src` (`projectile`: its copy living as long as `o`).
+fn weaponObject(gpa: Allocator, o: *Object, cls: *og.script.object.Class, src: Src, projectile: ?[]const u8) !void {
+    try standIn(gpa, o, cls, src.weapon);
+    try o.declare(gpa, "effects_from", .{ .type = .int, .value = .{ .int = src.fx_as } });
+    if (projectile) |p| try o.declare(gpa, "projectile", .{ .type = .string, .value = .{ .string = p } });
 }
 
 pub const Sim = struct {
@@ -47,6 +74,10 @@ pub const Sim = struct {
     /// (a battle level of default actorScale: explosions lifted as in battle).
     w: World,
     who: Object,
+    who_class: og.script.object.Class = undefined,
+    /// The striking weapon (the fx code reads its own effect values: fx.weapon).
+    weapon: Object = .{ .name = "", .class = undefined },
+    weapon_class: og.script.object.Class = undefined,
     /// The attacker's engine part: its model and animation, for the effects that follow
     /// its link points (world/spawn.zig aimFlames, aimBalls).
     native: og.state.object.Native = og.state.object.nativeFor(".act"),
@@ -93,10 +124,12 @@ pub const Sim = struct {
         self.native.actor.loop = false;
         self.w.level = &self.level;
         errdefer self.who.vars.deinit(gpa);
+        errdefer self.weapon.vars.deinit(gpa);
+        try standIn(gpa, &self.who, &self.who_class, s.src.who);
+        try weaponObject(gpa, &self.weapon, &self.weapon_class, s.src, if (s.src.projectile) |p| try self.w.arena_state.allocator().dupe(u8, p) else null);
         // At the origin facing +y: the preview model's angle 0 (fields.modelAngle).
         inline for (.{ "x", "y", "z" }) |n| try self.who.declare(gpa, n, .{ .type = .float, .value = .{ .float = 0 } });
         try self.who.declare(gpa, "angle", .{ .type = .float, .value = .{ .float = std.math.pi / 2.0 } });
-        try self.who.declare(gpa, "nameid", .{ .type = .int, .value = .{ .int = s.hero } });
         try self.who.declare(gpa, "meshfile", .{ .type = .string, .value = .{ .string = self.names[0] } });
         // The length: until the hit is done and the effects are gone.
         var f: u32 = 0;
@@ -114,6 +147,7 @@ pub const Sim = struct {
         const gpa = self.w.gpa;
         self.reset();
         self.who.vars.deinit(gpa);
+        self.weapon.vars.deinit(gpa);
         for (self.names) |n| gpa.free(n);
         self.w.arena_state.deinit();
         gpa.destroy(self);
@@ -205,7 +239,8 @@ pub const Sim = struct {
     /// the projectile at the hit, the hit when it lands (or at once without one).
     fn events(self: *Sim, f: u32) void {
         const w = &self.w;
-        const fx = self.strike.fx;
+        var fx = self.strike.fx;
+        fx.weapon = &self.weapon;
         if (self.strike.pre) |p| if (f == p) og.fx.hits.preFlash(w, &self.who, fx, self.target());
         if (f == self.strike.hit and !self.launched) {
             self.launched = true;
@@ -393,7 +428,7 @@ const Draw = struct {
                 sp[k] = d.screen(og.actor.model_cache.toWorldLocal(lp, s, pos, @cos(yaw), @sin(yaw)));
                 uv[k] = part.vertices[t[k]].uv;
             }
-            d.layer.canvas.triangle(sp, uv, d.layer.textures.?.partTexture(m, pi), og.render.raster.gray(1));
+            d.solid(sp, uv, d.layer.textures.?.partTexture(m, pi));
         };
     }
 
@@ -422,12 +457,39 @@ const Draw = struct {
     }
 
     fn shaded(d: Draw, sp: [3][3]f32, uv: [3][2]f32, tex: Image, blend: og.effects.dsc.Blend) void {
+        d.glowTri(sp, uv, tex, .{ 1, 1, 1 }, switch (blend) {
+            .alpha => .alpha,
+            .add => .add,
+            else => .screen,
+        }, .none, 0);
+    }
+
+    /// An opaque textured triangle (depth written): to the layer's sink (the GPU preview)
+    /// when it has one, else the canvas.
+    fn solid(d: Draw, sp: [3][3]f32, uv: [3][2]f32, tex: ?Image) void {
+        const sk = d.layer.sink orelse return d.layer.canvas.triangle(sp, uv, tex, og.render.raster.gray(1));
+        const a = d.arena;
+        const pos = a.dupe([3]f32, &sp) catch return;
+        const verts = a.alloc(og.core.model.Vertex, 3) catch return;
+        for (verts, uv) |*v, t| v.* = .{ .pos = .{ 0, 0, 0 }, .uv = t };
+        const col = a.alloc([3]f32, 3) catch return;
+        @memset(col, .{ 1, 1, 1 });
+        const tris = a.dupe([3]u32, &.{.{ 0, 1, 2 }}) catch return;
+        const mips: []const Image = if (tex) |t| a.dupe(Image, &.{t}) catch return else &.{};
+        sk.part(sk.ctx, .{ .pos = pos, .verts = verts, .col = col, .tris = tris, .two_sided = true, .mips = mips, .alpha = 1, .depth_write = true, .test_bias = 0 });
+    }
+
+    /// An effect triangle, depth-tested, not written: `tex` (none: white) × `col`, blended
+    /// as `blend` with a material program; to the layer's sink when it takes effects, else
+    /// the canvas (its glow and screen images for add and screen).
+    fn glowTri(d: Draw, sp: [3][3]f32, uv: [3][2]f32, tex: ?Image, col: [3]f32, blend: Layer.BillboardBlend, program: og.render.raster.Canvas.Program, k: f32) void {
+        if (d.layer.sink) |sk| if (sk.effect) |fx_| return fx_(sk.ctx, .{ .p = sp, .uv = uv, .tex = tex, .col = col, .blend = blend, .program = program, .k = k });
         const sh: og.render.raster.Canvas.Shade = switch (blend) {
-            .alpha => .{ .depth_write = false, .tex_alpha = true },
-            .add => .{ .add = &d.layer.glow, .depth_write = false },
-            else => .{ .add = &d.layer.screen, .screen = true, .depth_write = false },
+            .alpha => .{ .depth_write = false, .tex_alpha = true, .program = program, .k = k },
+            .add => .{ .add = &d.layer.glow, .depth_write = false, .program = program, .k = k },
+            .screen => .{ .add = &d.layer.screen, .screen = true, .depth_write = false, .program = program, .k = k },
         };
-        d.layer.canvas.triangleShaded(sp, uv, tex, og.render.raster.gray(1), sh);
+        d.layer.canvas.triangleShaded(sp, uv, tex, .{ col, col, col }, sh);
     }
 
     /// Ribbon A→B offset ±`side` across (effects_view.zig ribbon), additive. The game
@@ -446,10 +508,9 @@ const Draw = struct {
         const c = [4][3]f32{ og.vec.add(a, side), og.vec.add(b, side), og.vec.sub(b, side), og.vec.sub(a, side) };
         const uv = [4][2]f32{ .{ q.uv[0], 0 }, .{ q.uv[1], 0 }, .{ q.uv[1], 1 }, .{ q.uv[0], 1 } };
         const s = [4][3]f32{ d.screen(c[0]), d.screen(c[1]), d.screen(c[2]), d.screen(c[3]) };
-        const sh: og.render.raster.Canvas.Shade = .{ .add = &d.layer.glow, .depth_write = false, .program = q.program, .k = q.k };
         const cv = [3]f32{ q.rgb[0] * q.alpha, q.rgb[1] * q.alpha, q.rgb[2] * q.alpha };
-        d.layer.canvas.triangleShaded(.{ s[0], s[1], s[2] }, .{ uv[0], uv[1], uv[2] }, fr[frame % fr.len], .{ cv, cv, cv }, sh);
-        d.layer.canvas.triangleShaded(.{ s[0], s[2], s[3] }, .{ uv[0], uv[2], uv[3] }, fr[frame % fr.len], .{ cv, cv, cv }, sh);
+        d.glowTri(.{ s[0], s[1], s[2] }, .{ uv[0], uv[1], uv[2] }, fr[frame % fr.len], cv, .add, q.program, q.k);
+        d.glowTri(.{ s[0], s[2], s[3] }, .{ uv[0], uv[2], uv[3] }, fr[frame % fr.len], cv, .add, q.program, q.k);
     }
 
     /// A flame particle (og.effects.batch): a billboard, a world unit a screen pixel.
@@ -475,7 +536,7 @@ const Draw = struct {
                 sp[k] = d.screen(og.actor.model_cache.toWorldLocal(lp, s, ma.pos, @cos(yaw), @sin(yaw)));
                 uv[k] = part.vertices[t[k]].uv;
             }
-            d.layer.canvas.triangleShaded(sp, uv, d.layer.textures.?.partTexture(m, pi), og.render.raster.gray(ma.k), .{ .add = &d.layer.glow, .depth_write = false, .program = ma.program, .k = ma.pk });
+            d.glowTri(sp, uv, d.layer.textures.?.partTexture(m, pi), .{ ma.k, ma.k, ma.k }, .add, ma.program, ma.pk);
         };
     }
 };

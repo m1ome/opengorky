@@ -24,7 +24,7 @@ const clay = @import("clay.zig");
 const gui = @import("widgets.zig");
 const lay = @import("layout.zig");
 
-pub const Kind = enum { level, entry, scene, script, sound, video };
+pub const Kind = enum { level, entry, scene, script, sound, video, model };
 
 /// A tree row: its kind and name (level, entry `archive|entry` or id, scene, script entry,
 /// sound, video).
@@ -83,11 +83,22 @@ pub fn draw(app: *App, a: Allocator) void {
     gui.menuLine();
     if (gui.menuRow(app, "tm_open", .file_text, tx.get(tx.tm_open), "", theme.text, true)) openItem(app, it);
     gui.menuLine();
-    if (gui.menuRow(app, "tm_copy", .copy, tx.get(tx.cm_copy), main.cmdKey(a, "C"), theme.text, true)) copy(app, it);
+    // A model: no copy of its own (a new one comes from a .glb); its export instead.
+    const copies = it.kind != .model;
+    if (gui.menuRow(app, "tm_copy", .copy, tx.get(tx.cm_copy), main.cmdKey(a, "C"), theme.text, copies)) copy(app, it);
     const can_paste = app.tree_clip != null;
     if (gui.menuRow(app, "tm_paste", .copy, tx.get(tx.tm_paste), main.cmdKey(a, "V"), theme.text, can_paste)) duplicate(app, app.tree_clip.?);
-    if (gui.menuRow(app, "tm_dup", .copy, tx.get(tx.cm_duplicate), main.cmdKey(a, "D"), theme.text, true)) duplicate(app, it);
+    if (gui.menuRow(app, "tm_dup", .copy, tx.get(tx.cm_duplicate), main.cmdKey(a, "D"), theme.text, copies)) duplicate(app, it);
     if (gui.menuRow(app, "tm_rename", .pencil, tx.get(tx.cm_rename), "", theme.text, it.kind == .scene)) renameScene(app, it.name());
+    if (it.kind == .model and gui.menuRow(app, "tm_glb", .log_out, tx.get(tx.b_glb_out), "", theme.text, true)) {
+        doctabs.show(app, .models, it.name());
+        app.askFile(.{ .kind = .glb_out, .run = @import("look_pages.zig").onGlbOut, .name = it.name() });
+    }
+    // OpenGorky: an entry's block or a model of the project's own, asked first.
+    if (app.ogLayout() and (it.kind == .entry or it.kind == .model)) {
+        gui.menuLine();
+        if (gui.menuRow(app, "tm_delete", .trash_2, tx.get(tx.cm_delete), "", theme.warn, true)) askDelete(app, it, title);
+    }
     clay.close();
 }
 
@@ -101,6 +112,7 @@ fn kindName(k: Kind) tx.Msg {
         .script => tx.tm_k_script,
         .sound => tx.tm_k_sound,
         .video => tx.tm_k_video,
+        .model => tx.tm_k_model,
     };
 }
 
@@ -114,6 +126,27 @@ fn openItem(app: *App, it: Item) void {
         .script => if (app.store.file(common_archive, n)) |f| doctabs.showCode(app, f, null) else |_| {},
         .sound => doctabs.show(app, .sounds, n),
         .video => doctabs.show(app, .videos, n),
+        .model => doctabs.show(app, .models, n),
+    }
+}
+
+/// Delete for row `it` (`title` its name): the confirmation, or a window saying why not
+/// (an entry the project names elsewhere, a model worn or the game's).
+fn askDelete(app: *App, it: Item, title: []const u8) void {
+    app.tree_menu = null;
+    switch (it.kind) {
+        .model => {
+            if (!@import("look_pages.zig").modelFree(app, it.name())) return app.setAlert(tx.tm_delete_used, tx.tm_model_used, .{});
+            app.askDelete(.model, 0, it.name());
+        },
+        .entry => {
+            if (@import("entry_copy.zig").ogUsedIn(app, it.name())) |p| return app.setAlert(tx.tm_delete_used, tx.tm_used_in, .{p});
+            app.askDelete(.entry, 0, it.name());
+            // The question names it as the tree does, not by its key.
+            const cf = &app.confirm.?;
+            cf.text_len = tx.print(&cf.text_buf, tx.cf_delete, .{title}).len;
+        },
+        else => {},
     }
 }
 
@@ -131,6 +164,7 @@ pub fn duplicate(app: *App, it: Item) void {
         .script => copyScript(app, it.name()),
         .sound => copySound(app, it.name()),
         .video => copyVideo(app, it.name()),
+        .model => return,
     };
     r catch |err| app.setStatus(tx.st_tree_copy_failed, .{ it.name(), err });
 }

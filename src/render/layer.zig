@@ -104,6 +104,72 @@ pub const Layer = struct {
     /// layer's size, so computed once instead of per pixel.
     shadow_x: []ShadowSample = &.{},
     shadow_y: []ShadowSample = &.{},
+    /// Model parts go here instead of the canvas (the viewer's GPU pass): lit and
+    /// projected per vertex, rasterised there. Whole models go with their additive passes
+    /// (overlays, tint; `Sink.mesh`); parts with them or hidden stay on the canvas.
+    sink: ?Sink = null,
+
+    /// A model part for `Sink`: per vertex its canvas position (x, y and the canvas depth,
+    /// larger is farther), texture coordinates and light; its triangles, back faces to
+    /// skip unless `two_sided`; the texture's mip levels (none: untextured grey).
+    pub const PartDraw = struct {
+        pos: []const [3]f32,
+        verts: []const @import("../core.zig").model.Vertex,
+        col: []const [3]f32,
+        tris: []const [3]u32,
+        two_sided: bool,
+        mips: []const Image,
+        alpha: f32,
+        depth_write: bool,
+        test_bias: f32,
+    };
+    /// A whole model for `Sink.mesh`: skinned, lit and projected there (the GPU) as
+    /// `drawParts` would — posed `model` at `frame`, mesh scale `s`, placement `p`.
+    /// `box_id` names the drawn thing across frames (its screen box comes back a frame
+    /// late).
+    pub const MeshDraw = struct {
+        model: *const Model,
+        frame: u32,
+        s: f32,
+        p: Placement,
+        cam: camera.Camera,
+        origin: [2]f32,
+        ss: f32,
+        light: Lighting,
+        textures: ?*Textures,
+        box_id: usize,
+    };
+    pub const Sink = struct {
+        ctx: *anyopaque,
+        part: *const fn (ctx: *anyopaque, d: PartDraw) void,
+        /// Whole models (null: their parts through `part`); returns the screen box the
+        /// model had last frame (layer units), null if not known yet.
+        mesh: ?*const fn (ctx: *anyopaque, d: MeshDraw) ?[4]f32 = null,
+        /// Shadows cast (null: into this layer's mask), composited there after the models.
+        shadow: ?*const fn (ctx: *anyopaque, d: ShadowDraw) void = null,
+        /// Effect triangles (null: into this canvas), drawn after the models and shadows.
+        effect: ?*const fn (ctx: *anyopaque, d: EffectDraw) void = null,
+    };
+    /// An effect triangle for `Sink.effect`: canvas corners `p`, `tex` (none: white) ×
+    /// colour `col`, blended as `blend` (alpha: by `alpha` × texel alpha), with a material program.
+    pub const EffectDraw = struct { p: [3][3]f32, uv: [3][2]f32, tex: ?Image, col: [3]f32, blend: BillboardBlend, alpha: f32 = 1, program: raster.Canvas.Program = .none, k: f32 = 0 };
+    /// A shadow for `Sink.shadow`: as `castShadow` — `model`'s main part (all with
+    /// `all_parts`) from light point `light` onto the floor at its position, on a
+    /// `w`×`h` canvas.
+    pub const ShadowDraw = struct {
+        model: *const Model,
+        frame: u32,
+        s: f32,
+        pos: [3]f32,
+        angle: f32,
+        cam: camera.Camera,
+        origin: [2]f32,
+        ss: f32,
+        light: [3]f32,
+        all_parts: bool,
+        w: f32,
+        h: f32,
+    };
 
     const BaseKey = struct { origin: [2]f32, src: DepthSource };
 
@@ -176,6 +242,7 @@ pub const Layer = struct {
         const zg = p.pos[2];
         if (light[2] <= zg + 1) return;
         const frame = @min(p.frame, model.frames.frames -| 1);
+        if (self.sink) |sk| if (sk.shadow) |sh| return sh(sk.ctx, .{ .model = model, .frame = frame, .s = p.scale * model.unitScale(), .pos = p.pos, .angle = p.angle, .cam = cam, .origin = self.origin, .ss = @floatFromInt(self.ss), .light = light, .all_parts = all_parts, .w = @floatFromInt(self.canvas.img.width), .h = @floatFromInt(self.canvas.img.height) });
         const pts = try skin.pose(arena, model.mesh, model.frames, frame, .row);
         var main: usize = 0;
         for (model.mesh.parts, 0..) |part, i| {
@@ -557,6 +624,8 @@ pub const Layer = struct {
         depth_bias: f32 = 0,
         /// The model itself is not drawn (materialization at v < 0.6), only the passes.
         hidden: bool = false,
+        /// What is drawn, the same across frames (`Sink.mesh`'s screen box); 0: none.
+        box_id: usize = 0,
         /// Materialization glow (0x42a620): additive color without a texture.
         tint: ?[3]f32 = null,
         /// Additive passes over the model: ice on a frozen fighter (0x4dc700),
@@ -574,9 +643,15 @@ pub const Layer = struct {
     pub fn draw(self: *Layer, arena: Allocator, cam: camera.Camera, model: *const Model, p: Placement) !void {
         self.canvas.beginRegion();
         const frame = @min(p.frame, model.frames.frames -| 1);
-        const pts = try skin.pose(arena, model.mesh, model.frames, frame, .row);
         const s = p.scale * model.unitScale();
         self.bbox = .{ std.math.inf(f32), std.math.inf(f32), -std.math.inf(f32), -std.math.inf(f32) };
+        if (self.sink) |sk| if (sk.mesh) |mesh| {
+            if (mesh(sk.ctx, .{ .model = model, .frame = frame, .s = s, .p = p, .cam = cam, .origin = self.origin, .ss = @floatFromInt(self.ss), .light = self.light, .textures = self.textures, .box_id = p.box_id })) |b| self.bbox = b;
+            if (p.attach) |at| try self.drawAttached(arena, cam, model, frame, s, p, at);
+            for (p.extra) |at| try self.drawAttached(arena, cam, model, frame, s, p, at);
+            return;
+        };
+        const pts = try skin.pose(arena, model.mesh, model.frames, frame, .row);
         try self.drawParts(arena, cam, model, pts, s, p, null);
         if (p.attach) |at| try self.drawAttached(arena, cam, model, frame, s, p, at);
         for (p.extra) |at| try self.drawAttached(arena, cam, model, frame, s, p, at);
@@ -605,6 +680,10 @@ pub const Layer = struct {
                     sp[i] = .{ (q.x - self.origin[0]) * ssf, (q.y - self.origin[1]) * ssf, -q.depth };
                     uv[i] = part.vertices[t[i]].uv;
                 }
+                if (self.sink) |sk| if (sk.effect) |fx| {
+                    fx(sk.ctx, .{ .p = sp, .uv = uv, .tex = tex, .col = .{ 1, 1, 1 }, .blend = .add });
+                    continue;
+                };
                 self.canvas.triangleShaded(sp, uv, tex, raster.gray(1), .{ .add = &self.glow });
                 self.glow_used = true;
             }
@@ -628,6 +707,11 @@ pub const Layer = struct {
         const uv = [4][2]f32{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } };
         const k = std.math.clamp(alpha, 0, 1);
         const lit: [3]f32 = if (blend == .alpha) rgb else .{ rgb[0] * k, rgb[1] * k, rgb[2] * k };
+        if (self.sink) |sk| if (sk.effect) |fx| {
+            fx(sk.ctx, .{ .p = .{ sp[0], sp[1], sp[2] }, .uv = .{ uv[0], uv[1], uv[2] }, .tex = tex, .col = lit, .blend = blend, .alpha = alpha, .program = program, .k = pk });
+            fx(sk.ctx, .{ .p = .{ sp[0], sp[2], sp[3] }, .uv = .{ uv[0], uv[2], uv[3] }, .tex = tex, .col = lit, .blend = blend, .alpha = alpha, .program = program, .k = pk });
+            return;
+        };
         const col = [3][3]f32{ lit, lit, lit };
         var sh: raster.Canvas.Shade = switch (blend) {
             .alpha => .{ .alpha = alpha, .depth_write = false, .tex_alpha = true },
@@ -698,6 +782,22 @@ pub const Layer = struct {
                 const nw = [3]f32{ n1[0] * ca - n1[2] * sa, n1[0] * sa + n1[2] * ca, n1[1] };
                 cv.* = self.light.color(wv.*, nw);
             }
+            if (self.sink) |sk| if (!p.hidden and p.tint == null and p.overlays[0] == null and p.overlays[1] == null) {
+                // Projected once per vertex (the canvas does it per corner); the box as the
+                // canvas path keeps it, over the triangles' corners.
+                const pos = try arena.alloc([3]f32, ppts.len);
+                for (world, pos) |wv, *sp| {
+                    const q = cam.project(wv);
+                    sp.* = .{ (q.x - self.origin[0]) * ssf, (q.y - self.origin[1]) * ssf, -q.depth };
+                }
+                if (frame_of == null) for (part.triangles) |t| for (t) |vi| {
+                    const lx = pos[vi][0] / ssf;
+                    const ly = pos[vi][1] / ssf;
+                    self.bbox = .{ @min(self.bbox[0], lx), @min(self.bbox[1], ly), @max(self.bbox[2], lx), @max(self.bbox[3], ly) };
+                };
+                sk.part(sk.ctx, .{ .pos = pos, .verts = part.vertices, .col = cols, .tris = part.triangles, .two_sided = model.two_sided, .mips = mips, .alpha = p.alpha, .depth_write = p.depth_write, .test_bias = p.depth_bias });
+                continue;
+            };
             for (part.triangles) |t| {
                 var sp: [3][3]f32 = undefined;
                 var uv: [3][2]f32 = undefined;

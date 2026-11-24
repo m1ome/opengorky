@@ -1,0 +1,272 @@
+#pragma clang diagnostic ignored "-Wunused-variable"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+#include <metal_atomic>
+
+using namespace metal;
+
+struct _43
+{
+    float4 _m0;
+    float4 _m1;
+    float4 _m2;
+    float4 _m3;
+    float4 _m4;
+    float4 _m5;
+    float4 _m6;
+    float4 _m7;
+    float4 _m8;
+    float4 _m9;
+    float4 _m10;
+    float4 _m11;
+    float4 _m12;
+    float4 _m13;
+    float4 _m14;
+    uint4 _m15;
+    uint4 _m16;
+};
+
+struct _113
+{
+    float4 _m0;
+    uint _m1;
+    uint _m2;
+    float2 _m3;
+};
+
+struct _115
+{
+    _113 _m0[1];
+};
+
+struct _137
+{
+    uint2 _m0[1];
+};
+
+struct _158
+{
+    uint _m0[1];
+};
+
+struct _171
+{
+    float4 _m0[1];
+};
+
+struct _176
+{
+    uint _m0[1];
+};
+
+struct _348
+{
+    float4 _m0[1];
+};
+
+struct _555
+{
+    float _m0[1];
+};
+
+struct _578
+{
+    uint _m0[2];
+};
+
+struct _634
+{
+    uint _m0[1];
+};
+
+constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(64u, 1u, 1u);
+
+kernel void main0(constant _43& _45 [[buffer(0)]], device _115& _117 [[buffer(1)]], device _176& _178 [[buffer(2)]], device _137& _139 [[buffer(3)]], device _158& _160 [[buffer(4)]], device _171& _173 [[buffer(5)]], device _348& _350 [[buffer(6)]], device _555& _557 [[buffer(7)]], device _634& _636 [[buffer(8)]], device _578& _580 [[buffer(9)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+{
+    do
+    {
+        if (gl_GlobalInvocationID.x >= _45._m15.x)
+        {
+            break;
+        }
+        float2 _911 = _117._m0[gl_GlobalInvocationID.x]._m3;
+        float3 _886;
+        _886 = float3(0.0);
+        float3 _217;
+        for (uint _885 = 0u; _885 < _139._m0[gl_GlobalInvocationID.x].y; _886 = _217, _885++)
+        {
+            uint _168 = _160._m0[_139._m0[gl_GlobalInvocationID.x].x + _885] * 3u;
+            float3 _213 = cross(_173._m0[_45._m15.y + _178._m0[_168]].xyz - _173._m0[_45._m15.y + _178._m0[_168 + 1u]].xyz, _173._m0[_45._m15.y + _178._m0[_168 + 2u]].xyz - _173._m0[_45._m15.y + _178._m0[_168 + 1u]].xyz);
+            float _678 = length(_213);
+            float3 _905;
+            if (_678 > 0.0)
+            {
+                _905 = _213 / float3(_678);
+            }
+            else
+            {
+                _905 = _213;
+            }
+            _217 = _886 + _905;
+        }
+        float _695 = length(_886);
+        float3 _887;
+        if (_695 > 0.0)
+        {
+            _887 = _886 / float3(_695);
+        }
+        else
+        {
+            _887 = _886;
+        }
+        float3 _247 = float3(dot(_45._m0.xyz, _173._m0[_45._m15.y + gl_GlobalInvocationID.x].xyz), dot(_45._m1.xyz, _173._m0[_45._m15.y + gl_GlobalInvocationID.x].xyz), dot(_45._m2.xyz, _173._m0[_45._m15.y + gl_GlobalInvocationID.x].xyz)) + _45._m3.xyz;
+        float _252 = _247.x * _45._m3.w;
+        float _257 = _247.z * _45._m3.w;
+        float _273 = (_45._m4.x + (_252 * _45._m5.x)) - (_257 * _45._m5.y);
+        float _283 = (_45._m4.y + (_252 * _45._m5.y)) + (_257 * _45._m5.x);
+        float _290 = _45._m4.z + (_247.y * _45._m3.w);
+        float3 _291 = float3(_273, _283, _290);
+        float _302 = _45._m4.z + ((_290 - _45._m4.z) * _45._m4.w);
+        _291.z = _302;
+        float3 _306 = -_887;
+        float _731 = dot(_45._m0.xyz, _306);
+        float _741 = dot(_45._m2.xyz, _306);
+        float3 _330 = float3((_731 * _45._m5.x) - (_741 * _45._m5.y), (_731 * _45._m5.y) + (_741 * _45._m5.x), dot(_45._m1.xyz, _306));
+        float3 _889;
+        _889 = _45._m7.xyz;
+        float3 _908;
+        for (uint _888 = 0u; _888 < _45._m15.w; _889 = _908, _888++)
+        {
+            uint _352 = _888 * 2u;
+            float3 _366 = _350._m0[_352].xyz - _291;
+            float _370 = dot(_330, _366);
+            if (_370 <= 0.0)
+            {
+                _908 = _889;
+                continue;
+            }
+            float _379 = dot(_366, _366);
+            float _389 = 1.0 - (_379 / (_350._m0[_352].w * _350._m0[_352].w));
+            if (_389 <= 0.0)
+            {
+                _908 = _889;
+                continue;
+            }
+            _908 = _889 + (_350._m0[_352 + 1u].xyz * ((_389 * _370) / sqrt(_379)));
+        }
+        float _413 = dot(_330, float3(0.7955572605133056640625, 0.238667190074920654296875, 0.556890070438385009765625));
+        float3 _890;
+        if (_413 > 0.0)
+        {
+            _890 = _889 + (_45._m8.xyz * _413);
+        }
+        else
+        {
+            _890 = _889;
+        }
+        float3 _428 = fast::min(_890, float3(1.0));
+        float _891;
+        float _892;
+        float _893;
+        if (_45._m5.w > 0.5)
+        {
+            float3 _452 = (float3(_273, _302, _283) * _45._m10.w) - _45._m10.xyz;
+            float _461 = fast::max(9.9999997473787516355514526367188e-05, dot(_452, _45._m11.xyz));
+            _893 = -_461;
+            _892 = _45._m14.w - ((dot(_452, _45._m13.xyz) / _461) * _45._m14.y);
+            _891 = _45._m14.z + ((dot(_452, _45._m12.xyz) / _461) * _45._m14.x);
+        }
+        else
+        {
+            float _510 = ((-_45._m9.y) * _273) + (_45._m9.x * _283);
+            _893 = (_510 + _302) / _45._m9.z;
+            _892 = (_510 - _302) / _45._m9.z;
+            _891 = (_45._m9.x * _273) + (_45._m9.y * _283);
+        }
+        float _541 = _891 - _45._m6.x;
+        float _546 = _892 - _45._m6.y;
+        uint _553 = (_45._m15.z + gl_GlobalInvocationID.x) * 8u;
+        _557._m0[_553] = _541 * _45._m5.z;
+        _557._m0[_553 + 1u] = _546 * _45._m5.z;
+        float _575 = -_893;
+        _557._m0[_553 + 2u] = _575;
+        uint _748 = as_type<uint>(_575);
+        bool _751 = (_748 & 2147483648u) != 0u;
+        uint _894;
+        if (_751)
+        {
+            _894 = ~_748;
+        }
+        else
+        {
+            _894 = _748 | 2147483648u;
+        }
+        uint _586 = atomic_fetch_min_explicit((device atomic_uint*)&_580._m0[0], _894, memory_order_relaxed);
+        uint _896;
+        if (_751)
+        {
+            _896 = ~_748;
+        }
+        else
+        {
+            _896 = _748 | 2147483648u;
+        }
+        uint _592 = atomic_fetch_max_explicit((device atomic_uint*)&_580._m0[1], _896, memory_order_relaxed);
+        _557._m0[_553 + 3u] = _911.x;
+        _557._m0[_553 + 4u] = _911.y;
+        _557._m0[_553 + 5u] = _428.x;
+        _557._m0[_553 + 6u] = _428.y;
+        _557._m0[_553 + 7u] = _428.z;
+        if (_45._m16.x != 0u)
+        {
+            uint _632 = (_45._m16.x - 1u) * 4u;
+            uint _782 = as_type<uint>(_541);
+            bool _785 = (_782 & 2147483648u) != 0u;
+            uint _900;
+            if (_785)
+            {
+                _900 = ~_782;
+            }
+            else
+            {
+                _900 = _782 | 2147483648u;
+            }
+            uint _643 = atomic_fetch_min_explicit((device atomic_uint*)&_636._m0[_632], _900, memory_order_relaxed);
+            uint _799 = as_type<uint>(_546);
+            bool _802 = (_799 & 2147483648u) != 0u;
+            uint _901;
+            if (_802)
+            {
+                _901 = ~_799;
+            }
+            else
+            {
+                _901 = _799 | 2147483648u;
+            }
+            uint _650 = atomic_fetch_min_explicit((device atomic_uint*)&_636._m0[_632 + 1u], _901, memory_order_relaxed);
+            uint _902;
+            if (_785)
+            {
+                _902 = ~_782;
+            }
+            else
+            {
+                _902 = _782 | 2147483648u;
+            }
+            uint _657 = atomic_fetch_max_explicit((device atomic_uint*)&_636._m0[_632 + 2u], _902, memory_order_relaxed);
+            uint _903;
+            if (_802)
+            {
+                _903 = ~_799;
+            }
+            else
+            {
+                _903 = _799 | 2147483648u;
+            }
+            uint _664 = atomic_fetch_max_explicit((device atomic_uint*)&_636._m0[_632 + 3u], _903, memory_order_relaxed);
+        }
+        break;
+    } while(false);
+}
+

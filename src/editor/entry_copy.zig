@@ -436,3 +436,39 @@ pub fn ownPortraits(app: *App, idx: usize) !void {
     try setString(app, file, "portrait", e.id);
     app.setStatus(tx.st_portraits_copied, .{entry});
 }
+
+/// Where else the project names OpenGorky entry `key`'s block (`characters::sullivan`):
+/// the first other text of src/ that does (null: none, it can go).
+/// shortcut: a text match of its class; a bare name inside its own module is not found.
+pub fn ogUsedIn(app: *App, key: []const u8) ?[]const u8 {
+    const i = entries.entryByKey(app, key) catch return null;
+    const e = app.catalog.entries.items[i];
+    const a = app.frame.allocator();
+    for (app.store.listing(a, og_src, null, false)) |path| {
+        if (std.ascii.eqlIgnoreCase(path, e.entry) or !std.mem.endsWith(u8, path, ".ogs")) continue;
+        const f = app.store.file(og_src, path) catch continue;
+        const t = app.store.text(f);
+        var from: usize = 0;
+        while (std.mem.indexOfPos(u8, t, from, e.class)) |k| : (from = k + 1) {
+            const end = k + e.class.len;
+            // Not a longer name (`characters::sullivan_2`).
+            if (end < t.len and (std.ascii.isAlphanumeric(t[end]) or t[end] == '_')) continue;
+            return path;
+        }
+    }
+    return null;
+}
+
+/// OpenGorky entry `key` (`src|characters/x.ogs`) deleted: its file (one undo step;
+/// saving takes it out of src/), its tab closed without asking.
+pub fn deleteOg(app: *App, key: []const u8) !void {
+    const i = try entries.entryByKey(app, key);
+    const e = app.catalog.entries.items[i];
+    const f = try app.store.file(e.archive, e.entry);
+    const label = try app.frame.allocator().dupe(u8, if (e.title.len > 0) e.title else e.id);
+    if (@import("doctabs.zig").isShown(app, @import("kinds.zig").tabOf(e.kind), key)) @import("doctabs.zig").dropActive(app);
+    try app.store.delete(&.{f});
+    // Read again keeping the entry shown by its key (gone: none shown until its tab closes).
+    app.rebuildCatalog();
+    app.setStatus(tx.st_entry_deleted, .{label});
+}

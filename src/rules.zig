@@ -309,6 +309,14 @@ pub fn hasMonsterAttack(fighter: Who) bool {
 /// The weapon's row for this hero, else its hero = 0 row, else the weapon = 0, hero = 0
 /// row (both the last one); class keys first.
 pub fn heroAttack(weapon: Who, hero: Who) *const HeroAttack {
+    if (heroAttackRow(weapon, hero)) |b| return b;
+    // No row, not even a wildcard: the exe's rifle strike (Classic's data).
+    classicPath("rules.heroAttack: no row");
+    return &builtin.hero_attacks[builtin.hero_attacks.len - 1];
+}
+
+/// `hero`'s strike row with `weapon`; null: none, not even a wildcard (a monster's weapon).
+pub fn heroAttackRow(weapon: Who, hero: Who) ?*const HeroAttack {
     var best: ?*const HeroAttack = null;
     var score: u8 = 0;
     for (active.hero_attacks) |*r| {
@@ -323,10 +331,7 @@ pub fn heroAttack(weapon: Who, hero: Who) *const HeroAttack {
             score = s;
         }
     }
-    if (best) |b| return b;
-    // No row, not even a wildcard: the exe's rifle strike (Classic's data).
-    classicPath("rules.heroAttack: no row");
-    return &builtin.hero_attacks[builtin.hero_attacks.len - 1];
+    return best;
 }
 
 pub fn wdelayHero(hero: Who) bool {

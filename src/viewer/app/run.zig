@@ -229,9 +229,32 @@ pub fn run(init: std.process.Init) !void {
     var renderer: ?*c.SDL_Renderer = null;
     // HIGH_PIXEL_DENSITY: on Retina the window buffer is in real pixels; without it
     // SDL draws in points and the system stretches the frame 2× again (blurry).
-    try viewer_mod.check(c.SDL_CreateWindowAndRenderer("OpenGorky viewer", opts.window[0], opts.window[1], c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | (if (opts.input != null or opts.shot != null or opts.frames > 0) c.SDL_WINDOW_HIDDEN else 0), &window, &renderer));
+    window = c.SDL_CreateWindow("OpenGorky viewer", opts.window[0], opts.window[1], c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY | (if (opts.input != null or opts.shot != null or opts.frames > 0) c.SDL_WINDOW_HIDDEN else 0));
+    try viewer_mod.check(window != null);
+    // `renderer = gpu` (--renderer): the 2D renderer over an SDL GPU device (models then
+    // drawn on it); without one, the default renderer and the software models.
+    const want_gpu = (opts.renderer orelse cfg.renderer) == .gpu;
+    // The device only of a driver our shaders are for (gpu/shaders: SPIR-V, MSL): Vulkan or
+    // Metal — on Windows not Direct3D 12, which would take DXIL. Released after the renderer.
+    const gpu_device: ?*c.SDL_GPUDevice = if (want_gpu) c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV | c.SDL_GPU_SHADERFORMAT_MSL, false, null) else null;
+    defer if (gpu_device) |d| c.SDL_DestroyGPUDevice(d);
+    if (gpu_device) |d| {
+        renderer = c.SDL_CreateGPURenderer(d, window);
+        if (renderer == null) std.log.warn("no GPU renderer ({s}): models on the CPU", .{c.SDL_GetError()});
+    } else if (want_gpu) std.log.warn("no Vulkan or Metal GPU device ({s}): models on the CPU", .{c.SDL_GetError()});
+    if (renderer == null) renderer = c.SDL_CreateRenderer(window, null);
+    try viewer_mod.check(renderer != null);
+    std.log.info("renderer: {s}", .{std.mem.span(c.SDL_GetRendererName(renderer))});
+    if (gpu_device) |d| std.log.info("GPU driver: {s}", .{std.mem.span(c.SDL_GetGPUDeviceDriver(d))});
     defer c.SDL_DestroyWindow(window);
     defer c.SDL_DestroyRenderer(renderer);
+    // After the renderer's defer: released before its device goes.
+    const gpu_models = @import("../gpu/models.zig");
+    if (want_gpu) gpu_models.active = gpu_models.GpuModels.init(gpa, renderer.?);
+    defer if (gpu_models.active) |g| {
+        g.deinit();
+        gpu_models.active = null;
+    };
     startup.setWindowIcon(gpa, window.?);
     try viewer_mod.check(c.SDL_SetRenderLogicalPresentation(renderer, screen_w, screen_h, c.SDL_LOGICAL_PRESENTATION_INTEGER_SCALE));
     try viewer_mod.check(c.SDL_SetRenderDrawBlendMode(renderer, c.SDL_BLENDMODE_BLEND));
@@ -246,6 +269,8 @@ pub fn run(init: std.process.Init) !void {
     // $OPENGORKY_NO_SFX=1 is --no-sfx (background tests stay quiet).
     const env_mute = init.environ_map.get("OPENGORKY_MUTE") != null;
     const env_no_sfx = init.environ_map.get("OPENGORKY_NO_SFX") != null;
+    // $OPENGORKY_RENDER_THREADS=N: model raster threads (a weak machine's, or to measure one).
+    if (init.environ_map.get("OPENGORKY_RENDER_THREADS")) |t| @import("../level/layer.zig").render_threads = std.fmt.parseInt(usize, t, 10) catch null;
     const silent = opts.mute or env_mute or opts.frames > 0 or opts.input != null;
     if (opts.no_sfx or env_no_sfx) {
         mixer.muted[@backingInt(og.audio.mixer.Category.sfx)] = true;

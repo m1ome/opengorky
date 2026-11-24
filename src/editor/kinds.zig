@@ -58,7 +58,10 @@ pub fn of(t: Tab) Kind {
 pub fn label(app: *App, t: Tab, key: []const u8) []const u8 {
     if (of(t).title) |m| return tx.get(m);
     return switch (t) {
-        .characters, .items => if (entries.entryByKey(app, key)) |i| app.catalog.entries.items[i].id else |_| key,
+        .characters, .items => if (entries.entryByKey(app, key)) |i| blk: {
+            const e = app.catalog.entries.items[i];
+            break :blk if (e.title.len > 0) e.title else e.id;
+        } else |_| key,
         .sprites, .anims => key[if (std.mem.lastIndexOfAny(u8, key, "|\\")) |k| k + 1 else 0..],
         .code => key[if (std.mem.indexOfScalar(u8, key, '|')) |k| k + 1 else 0..],
         .ai_profiles => if (std.mem.startsWith(u8, key, "ai::")) key else if (aiRow(key)) |r| @import("entry_attacks.zig").profileName(app.frame.allocator(), r) else tx.get(tx.aip_title),

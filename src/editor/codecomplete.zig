@@ -75,7 +75,7 @@ fn appNames(ctx: *anyopaque, a: Allocator, what: completion.Names, actor: []cons
         .sounds => return app.player.names(app, a),
         .dialogs => return codenav.fileNames(app, a, "", ".dlg"),
         .videos => return @import("videopage.zig").names(app),
-        .meshes => return app.catalog.meshes.items,
+        .meshes => return @import("look_pages.zig").models(app, a),
         .classes => return codenav.fileNames(app, a, "classes\\", ".s"),
         .anims => return animNames(app, a, actor, text),
         .functions => {

@@ -143,7 +143,8 @@ pub fn hasLevel(app: *const App, i: usize) bool {
 }
 
 /// Tab `k` closed: the active one hands over to its neighbour, or nothing stays open.
-pub fn close(app: *App, k: usize) void {
+/// `ask`: its unsaved edits saved or taken back as answered (else they stay, unsaved).
+pub fn close(app: *App, k: usize, ask: bool) void {
     if (k >= app.doc_tabs.items.len) return;
     const was_active = isActive(app, &app.doc_tabs.items[k]);
     const gone = app.doc_tabs.items[k];
@@ -155,7 +156,7 @@ pub fn close(app: *App, k: usize) void {
         defer app.store.doc = shown;
         if (!codeview.applyOne(app, gone.key())) return;
     }
-    if (app.store.dirtyDoc(doc)) switch (askSave(app, gone)) {
+    if (ask and app.store.dirtyDoc(doc)) switch (askSave(app, gone)) {
         .save => {
             app.saveOnly(doc);
             if (app.store.dirtyDoc(doc)) return;
@@ -184,6 +185,13 @@ pub fn closeActive(app: *App) void {
         app.tab_close = k;
         return;
     };
+}
+
+/// The shown tab closed without asking: what it showed was just deleted (its deletion
+/// is an unsaved edit of its own, which "don't save" would take back).
+pub fn dropActive(app: *App) void {
+    closeActive(app);
+    app.tab_close_quiet = app.tab_close != null;
 }
 
 /// Save, don't save or keep the tab open: the system's question box.

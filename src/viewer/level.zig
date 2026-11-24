@@ -216,6 +216,8 @@ pub const LevelView = struct {
     layer_w: u32 = 640,
     layer_h: u32 = 480,
     layer_tex: ?*c.SDL_Texture = null,
+    /// The GPU pass drew models this frame (its texture goes over the layer's).
+    gpu_any: bool = false,
     /// Where `layer_tex` may be non-empty (uploaded by previous frames).
     /// Layer parts uploaded last time (they must be erased there too).
     tex_regions: [Canvas.max_regions]Canvas.Rect = undefined,

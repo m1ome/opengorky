@@ -1,0 +1,54 @@
+#version 450
+// actor/skin.zig `pose` (.row matrices): a part's vertices in the frame's pose, mesh
+// units. The weight the bones leave stays on the bind pose (`pos.w`, 1 − Σweights).
+layout(local_size_x = 64) in;
+
+// SDL's binding order: SPIR-V per set from 0; MSL one [[buffer]] sequence (uniforms,
+// read-only storage, read-write storage).
+#ifdef MSL
+#define RO(i) (i + 1)
+#define RW(i) (i + 4)
+#else
+#define RO(i) (i)
+#define RW(i) (i)
+#endif
+
+struct SVert {
+    vec4 pos;    // bind pose, w: the weight left on it
+    uint start;  // influences [start, start + count)
+    uint count;
+    vec2 uv;
+};
+
+layout(std430, set = 0, binding = RO(0)) readonly buffer Verts { SVert verts[]; };
+layout(std430, set = 0, binding = RO(1)) readonly buffer Infl { uvec2 infl[]; };  // bone, weight bits
+layout(std430, set = 0, binding = RO(2)) readonly buffer Bones { float bones[]; };  // 12 per bone
+layout(std430, set = 1, binding = RW(0)) writeonly buffer Posed { vec4 posed[]; };
+
+layout(set = 2, binding = 0) uniform P {
+    uint n;
+    uint posed_base;
+    uint bone_base;
+    uint skinned;
+};
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= n) return;
+    SVert v = verts[i];
+    vec3 p = v.pos.xyz;
+    if (skinned != 0u && v.count > 0u) {
+        vec3 acc = p * v.pos.w;
+        for (uint j = 0u; j < v.count; j++) {
+            uvec2 f = infl[v.start + j];
+            uint b = (bone_base + f.x) * 12u;
+            vec3 q = vec3(
+                bones[b + 0u] * p.x + bones[b + 3u] * p.y + bones[b + 6u] * p.z + bones[b + 9u],
+                bones[b + 1u] * p.x + bones[b + 4u] * p.y + bones[b + 7u] * p.z + bones[b + 10u],
+                bones[b + 2u] * p.x + bones[b + 5u] * p.y + bones[b + 8u] * p.z + bones[b + 11u]);
+            acc += q * uintBitsToFloat(f.y);
+        }
+        p = acc;
+    }
+    posed[posed_base + i] = vec4(p, 1.0);
+}

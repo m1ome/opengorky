@@ -898,6 +898,7 @@ postchain() {
   ED=${EDITOR_BIN:-./zig-out/bin/opengorky-editor}
   ogproject pc || { fail postchain "convert failed: $(tail -1 "$TMP/pc.convert")"; return; }
   OPENGORKY_MUTE=1 "$ED" "$TMP/pc" --post-for 01_port --post add grade - --post-for 01__port_park --post add vignette - \
+    --post add hsl - --post 2 rgb "[1.4, 1.5, 0.9]" --post 2 k 0.8 \
     --post-for 03_museum_observator --post add scanlines - --post-for 03__museum_chopper --post add vignette - --save >"$TMP/postchain.log" 2>&1 ||
     { fail postchain "editor failed"; return; }
   # A row too long for a line is on several (the OG printer): read it flattened.
@@ -905,6 +906,18 @@ postchain() {
     { fail postchain "the battle's chain is not its location's"; return; }
   tr -d ' \n' <"$TMP/pc/src/rules/fx.ogs" | grep -qE 'PostChain\(level="03__museum_chopper"[^;]*Post\(program=scanlines,k=0.5\),Post\(program=vignette' ||
     { fail postchain "03__museum_chopper's chain is not 03_museum_observator's"; return; }
+  # The battle's chain (grade, vignette, hsl): on the GPU renderer its shader (frame.zig
+  # applyPost) changes the frame; on the CPU one it is ignored (scripts/pngdiff.py: the
+  # frames differ). No GPU: skipped.
+  for r in cpu gpu; do
+    OPENGORKY_MUTE=1 perl -e 'alarm 90; exec @ARGV' "$TOOL" play "$TMP/pc" --start battle:01__port_park --renderer $r --time 1000 --shot "$TMP/postchain_$r.png" >"$TMP/postchain_$r.log" 2>&1 ||
+      { cp "$TMP/postchain_$r.log" "$TMP/postchain.log"; fail postchain "play failed ($r)"; return; }
+  done
+  grep -q 'post-processing off: not the GPU renderer' "$TMP/postchain_cpu.log" || { fail postchain "the CPU renderer did not turn post-processing off"; return; }
+  if grep -q 'post-processing: GPU shader' "$TMP/postchain_gpu.log"; then
+    ! python3 -I scripts/pngdiff.py "$TMP/postchain_cpu.png" "$TMP/postchain_gpu.png" >>"$TMP/postchain.log" 2>&1 ||
+      { fail postchain "the GPU frame is not post-processed: $(tail -1 "$TMP/postchain.log")"; return; }
+  fi
   ok postchain
 }
 
@@ -1301,7 +1314,26 @@ ogmodel() {
   ok ogmodel
 }
 
-ALL="boat medusa medusaload medusafirst matrixload sawtime bt ladder ladderclick labload sideline counterkill counterhand tranq scenewalk natohp natothreat recharge levelup shadowfloor badsave turncam aimclick barrelchain barrelexp barrelnovictim barrelfx decorpick radio strikewait decoy ballcharge toolsmoke sceneonce menublock medusafx morphfx booth roundtrip lift deps opening reopen staleinfo rules abilities testroom newchar testkit postchain ogedit scripted points phoenix events ogsview frames traitsdoc ogroundtrip ogplay pathscript reinforce convert convert-ui ogsave codeprobe ogmodel"
+# The GPU renderer (--renderer gpu: models, shadows, ice, shock, flashes, billboards on SDL
+# GPU) against the CPU one: the same battle frame — a frozen hornet, a shocked one,
+# Sullivan's chaingun flash — differs only by texels (the GPU picks mip levels per pixel,
+# the CPU per triangle): scripts/pngdiff.py's 4×4 block means. Skipped where the viewer
+# has no GPU device (it logs that and draws on the CPU).
+gpuview() {
+  sdl_env
+  for r in cpu gpu; do
+    OPENGORKY_MUTE=1 perl -e 'alarm 90; exec @ARGV' "$VIEWER" "$G" 01__port_park/sprite.dat --level --heroes --play --renderer $r \
+      --input "w 800;x state 01pr_hornet02 freeze;x fxstate 01pr_hornet05 shock;x attack sullivan cw_chaingun 01pr_hornet05;w 38;s $TMP/gpuview_$r.png;q" >"$TMP/gpuview_$r.log" 2>&1 ||
+      { cp "$TMP/gpuview_$r.log" "$TMP/gpuview.log"; fail gpuview "viewer failed ($r)"; return; }
+  done
+  cp "$TMP/gpuview_gpu.log" "$TMP/gpuview.log"
+  if ! grep -q 'renderer: gpu' "$TMP/gpuview.log" || grep -q 'GPU models off' "$TMP/gpuview.log"; then ok "gpuview (no GPU device: skipped)"; return; fi
+  python3 -I scripts/pngdiff.py "$TMP/gpuview_cpu.png" "$TMP/gpuview_gpu.png" >>"$TMP/gpuview.log" 2>&1 ||
+    { fail gpuview "GPU frame differs from the CPU one: $(tail -1 "$TMP/gpuview.log")"; return; }
+  ok gpuview
+}
+
+ALL="boat medusa medusaload medusafirst matrixload sawtime bt ladder ladderclick labload sideline counterkill counterhand tranq scenewalk natohp natothreat recharge levelup shadowfloor badsave turncam aimclick barrelchain barrelexp barrelnovictim barrelfx decorpick radio strikewait decoy ballcharge toolsmoke sceneonce menublock medusafx morphfx booth roundtrip lift deps opening reopen staleinfo rules abilities testroom newchar testkit postchain ogedit scripted points phoenix events ogsview frames traitsdoc ogroundtrip ogplay pathscript reinforce convert convert-ui ogsave codeprobe ogmodel gpuview"
 # (A scenario's function: its name with `_` for `-`.)
 [ $# -gt 0 ] && { for t in "$@"; do $(echo "$t" | tr - _); done; exit $FAILED; }
 # All scenarios: side by side ($JOBS, default the CPU count), each a run of this

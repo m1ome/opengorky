@@ -12,6 +12,9 @@ const compose = @import("level/compose.zig");
 
 /// The video player (the editor's Videos page).
 pub const Video = @import("media/video.zig").Video;
+/// The GPU renderer's model pass and post-processing (the editor's previews).
+pub const gpu_models = @import("gpu/models.zig");
+pub const gpu_post = @import("gpu/post.zig");
 
 pub const Scene = struct {
     gpa: Allocator,

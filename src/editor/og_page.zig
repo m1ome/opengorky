@@ -77,6 +77,21 @@ pub fn detail(app: *App, a: Allocator, idx: usize) void {
 fn entryStage(app: *App, a: Allocator, e: @import("catalog.zig").Entry, file: usize) void {
     const em = @import("entry_model.zig");
     if (e.kind == .enemy or e.kind == .hero) if (em.lookText(app, file)) |t| {
+        // Its strikes (a weapon it holds each): the model, or it striking with one.
+        const ea = @import("entry_attacks.zig");
+        if (strikesOf(app, a, e)) |ss| if (ss.list.len > 0) {
+            const labels = a.alloc([]const u8, ss.list.len + 1) catch return;
+            labels[0] = tx.get(tx.view_model);
+            for (ss.list, 1..) |at, k| labels[k] = weaponTitle(app, at.class);
+            const cur: usize = if (app.enemy_strike) |k| @min(k + 1, ss.list.len) else 0;
+            clay.open(.{ .layout = .{ .sizing = .{ .width = clay.grow() }, .padding = .{ .left = lay.space.md, .top = lay.space.sm, .bottom = lay.space.sm }, .childAlignment = .{ .y = ui.CLAY_ALIGN_Y_CENTER } }, .backgroundColor = theme.viewport });
+            if (gui.segmented(app, "og_strike", labels, cur)) |k| app.enemy_strike = if (k == 0) null else @intCast(k - 1);
+            clay.close();
+            if (cur > 0) if (ea.strikeOf(app.gpa, ss.who, ss.list[cur - 1])) |sh| {
+                const info = tx.alloc(a, tx.atk_with, .{ sh.slot, labels[cur] });
+                return em.lookStage(app, a, em.look(app, a, t, sh.slot, sh.held, e.riders.items), t, info, sh.held.strike, &.{});
+            };
+        };
         return em.lookStage(app, a, em.look(app, a, t, null, null, e.riders.items), t, null, null, &.{});
     };
     if (e.kind != .weapon) return stageText(app, a, file);
@@ -99,6 +114,24 @@ fn entryStage(app: *App, a: Allocator, e: @import("catalog.zig").Entry, file: us
             em.modelPane(app, em.look(app, a, std.fmt.allocPrint(a, "meshFile=\"{s}\";", .{m}) catch "", null, null, &.{}), null, tx.model_hint);
         } else stageText(app, a, file),
     }
+}
+
+/// A character's strikes: the weapons it holds (an enemy; a hero striking by its own rows,
+/// Medusa: its enemy side's) and who strikes; null: it strikes by the hero table.
+fn strikesOf(app: *App, a: Allocator, e: @import("catalog.zig").Entry) ?struct { who: og.rules.Who, list: []const @import("entry_attacks.zig").Attack } {
+    const ea = @import("entry_attacks.zig");
+    const who: og.rules.Who = .{ .id = og.core.entity.idOf(e.class) orelse 0, .class = e.class };
+    if (e.kind == .enemy) return .{ .who = who, .list = ea.attacksOf(app, a, e, who) };
+    if (!og.core.entity.heroOf(who).own_attacks) return null;
+    for (app.catalog.entries.items) |x| if (x.kind == .enemy and std.mem.eql(u8, x.class, e.class)) return .{ .who = who, .list = ea.attacksOf(app, a, x, who) };
+    return null;
+}
+
+/// Weapon class `class`'s title (its entry's), else its name.
+fn weaponTitle(app: *App, class: []const u8) []const u8 {
+    const id = @import("entry_rules.zig").bareClass(class);
+    for (app.catalog.entries.items) |x| if (x.kind == .weapon and std.ascii.eqlIgnoreCase(x.id, id)) return if (x.title.len > 0) x.title else id;
+    return id;
 }
 
 /// Scene `name` of an OpenGorky project (`src/scenes/<name>.ogs`): its block's text on the
@@ -176,7 +209,10 @@ pub fn sections(app: *App, a: Allocator, file: usize, key: []const u8, name_id: 
     const b = model_og.blockOf(app, a, file) orelse return gui.warning(tx.get(tx.og_no_block));
     const scope: Scope = .{ .module = b.ns, .uses = b.uses };
     gui.headCard();
-    gui.heading(b.names[b.names.len - 1], tx.alloc(a, tx.og_head, .{ b.e.kind, b.path }));
+    // An entry's in-game name as its heading (as the tree and tab say it), its block's name after.
+    const name = b.names[b.names.len - 1];
+    const title: []const u8 = if (name_id != null and b.names.len == 1) if (app.catalog.byKey(@import("store.zig").og_src, app.store.files.items[file].entry)) |i| app.catalog.entries.items[i].title else "" else "";
+    if (title.len > 0) gui.heading(title, std.fmt.allocPrint(a, "{s} · {s}", .{ name, tx.alloc(a, tx.og_head, .{ b.e.kind, b.path }) }) catch name) else gui.heading(name, tx.alloc(a, tx.og_head, .{ b.e.kind, b.path }));
     if (b.e.base.len > 0) gui.chip(tx.alloc(a, tx.og_archetype, .{b.e.base}));
     // Its code (the block's text) and its model (a weapon's mesh, a fighter's look's).
     gui.row(lay.space.sm);

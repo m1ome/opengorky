@@ -41,14 +41,21 @@ pub const Block = struct {
 };
 
 /// Parsed texts kept while their text is the same (pages read a block every frame).
-/// shortcut: a page holds names from these while it reads more blocks (an archetype, a
-/// level's other texts): more texts read in one frame than kept would free names in use;
-/// 128 is past what a page reads (a level's folder: its parts and one text per object's
-/// component, which `levelObjects` skips unparsed); upgrade to frame-pinned entries if one
-/// ever reads more.
-const Parsed = struct { file: usize, hash: u64, arena: std.heap.ArenaAllocator, unit: ?parser.Unit };
+/// One pushed out lives to the frame's end (`release`): the frame's layout still holds
+/// its names (an edit mid-frame makes a page read more texts than kept).
+const Parsed = struct { file: usize, hash: u64, arena: std.heap.ArenaAllocator, unit: ?parser.Unit, next: ?*Parsed = null };
 var parsed: [128]?*Parsed = @splat(null);
 var parsed_next: usize = 0;
+var retired: ?*Parsed = null;
+
+/// The parses pushed out during the last frame freed (its layout is drawn by now).
+pub fn release() void {
+    while (retired) |p| {
+        retired = p.next;
+        p.arena.deinit();
+        std.heap.page_allocator.destroy(p);
+    }
+}
 
 /// Store text file `f` parsed (null: it does not parse).
 fn unitOf(app: *App, f: usize) ?parser.Unit {
@@ -61,8 +68,8 @@ fn unitOf(app: *App, f: usize) ?parser.Unit {
     const a = p.arena.allocator();
     p.unit = parser.parse(a, a.dupe(u8, t) catch return null, app.store.files.items[f].entry, &diag) catch null;
     if (parsed[parsed_next]) |old| {
-        old.arena.deinit();
-        std.heap.page_allocator.destroy(old);
+        old.next = retired;
+        retired = old;
     }
     parsed[parsed_next] = p;
     parsed_next = (parsed_next + 1) % parsed.len;

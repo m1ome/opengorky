@@ -1,0 +1,138 @@
+#pragma clang diagnostic ignored "-Wunused-variable"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+#include <metal_atomic>
+
+using namespace metal;
+
+struct _21
+{
+    float4 _m0;
+    float4 _m1;
+    float4 _m2;
+    float4 _m3;
+    float4 _m4;
+    float4 _m5;
+    float4 _m6;
+    float4 _m7;
+    float4 _m8;
+    float4 _m9;
+    float4 _m10;
+    float4 _m11;
+    float4 _m12;
+    float4 _m13;
+    uint4 _m14;
+};
+
+struct _100
+{
+    float4 _m0[1];
+};
+
+struct _327
+{
+    float2 _m0[1];
+};
+
+struct _354
+{
+    uint _m0[1];
+};
+
+constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(64u, 1u, 1u);
+
+kernel void main0(constant _21& _23 [[buffer(0)]], device _100& _102 [[buffer(1)]], device _327& _329 [[buffer(2)]], device _354& _356 [[buffer(3)]], uint3 gl_GlobalInvocationID [[thread_position_in_grid]])
+{
+    do
+    {
+        if (gl_GlobalInvocationID.x >= _23._m14.x)
+        {
+            break;
+        }
+        float3 _115 = float3(dot(_23._m0.xyz, _102._m0[_23._m14.y + gl_GlobalInvocationID.x].xyz), dot(_23._m1.xyz, _102._m0[_23._m14.y + gl_GlobalInvocationID.x].xyz), dot(_23._m2.xyz, _102._m0[_23._m14.y + gl_GlobalInvocationID.x].xyz)) + _23._m3.xyz;
+        float _120 = _115.x * _23._m3.w;
+        float _126 = _115.z * _23._m3.w;
+        float _159 = _23._m4.z + (_115.y * _23._m3.w);
+        float3 _160 = float3((_23._m4.x + (_120 * _23._m6.x)) - (_126 * _23._m6.y), (_23._m4.y + (_120 * _23._m6.y)) + (_126 * _23._m6.x), _159);
+        float _167 = _23._m5.z - 0.5;
+        float3 _499;
+        if (_159 >= _167)
+        {
+            float3 _487 = _160;
+            _487.z = _167;
+            _499 = _487;
+        }
+        else
+        {
+            _499 = _160;
+        }
+        float _188 = (_23._m4.w - _23._m5.z) / (_499.z - _23._m5.z);
+        float _199 = _23._m5.x + ((_499.x - _23._m5.x) * _188);
+        float _209 = _23._m5.y + ((_499.y - _23._m5.y) * _188);
+        float _500;
+        float _501;
+        if (_23._m5.w > 0.5)
+        {
+            float3 _234 = (float3(_199, _23._m4.w, _209) * _23._m9.w) - _23._m9.xyz;
+            float _243 = fast::max(9.9999997473787516355514526367188e-05, dot(_234, _23._m10.xyz));
+            _501 = _23._m13.w - ((dot(_234, _23._m12.xyz) / _243) * _23._m13.y);
+            _500 = _23._m13.z + ((dot(_234, _23._m11.xyz) / _243) * _23._m13.x);
+        }
+        else
+        {
+            _501 = ((((-_23._m8.y) * _199) + (_23._m8.x * _209)) - _23._m4.w) / _23._m8.z;
+            _500 = (_23._m8.x * _199) + (_23._m8.y * _209);
+        }
+        float _316 = (_500 - _23._m7.x) * _23._m6.z;
+        float _324 = (_501 - _23._m7.y) * _23._m6.z;
+        _329._m0[_23._m14.z + gl_GlobalInvocationID.x] = float2(1.0 + (_316 * _23._m7.z), 1.0 + (_324 * _23._m7.w));
+        uint _352 = _23._m14.w * 4u;
+        uint _416 = as_type<uint>(_316);
+        bool _419 = (_416 & 2147483648u) != 0u;
+        uint _502;
+        if (_419)
+        {
+            _502 = ~_416;
+        }
+        else
+        {
+            _502 = _416 | 2147483648u;
+        }
+        uint _363 = atomic_fetch_min_explicit((device atomic_uint*)&_356._m0[_352], _502, memory_order_relaxed);
+        uint _433 = as_type<uint>(_324);
+        bool _436 = (_433 & 2147483648u) != 0u;
+        uint _503;
+        if (_436)
+        {
+            _503 = ~_433;
+        }
+        else
+        {
+            _503 = _433 | 2147483648u;
+        }
+        uint _370 = atomic_fetch_min_explicit((device atomic_uint*)&_356._m0[_352 + 1u], _503, memory_order_relaxed);
+        uint _504;
+        if (_419)
+        {
+            _504 = ~_416;
+        }
+        else
+        {
+            _504 = _416 | 2147483648u;
+        }
+        uint _377 = atomic_fetch_max_explicit((device atomic_uint*)&_356._m0[_352 + 2u], _504, memory_order_relaxed);
+        uint _505;
+        if (_436)
+        {
+            _505 = ~_433;
+        }
+        else
+        {
+            _505 = _433 | 2147483648u;
+        }
+        uint _384 = atomic_fetch_max_explicit((device atomic_uint*)&_356._m0[_352 + 3u], _505, memory_order_relaxed);
+        break;
+    } while(false);
+}
+

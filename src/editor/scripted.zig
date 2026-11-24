@@ -1296,6 +1296,8 @@ fn opClickId(app: *App, op: []const []const u8) !void {
     for (0..2) |_| main.present(app, main.frame(app, app.size, .{ 0, 0 }));
     const b = @import("clay.zig").box(@import("clay.zig").idi(op[1], try std.fmt.parseInt(u32, op[2], 10))) orelse return error.NoElement;
     app.mouse = .{ b.x + b.width / 2, b.y + b.height / 2 };
+    // The pointer over it a frame first, as a hand's (a menu takes only clicks it is under).
+    main.present(app, main.frame(app, app.size, .{ 0, 0 }));
     app.clicked = true;
     main.present(app, main.frame(app, app.size, .{ 0, 0 }));
     app.clicked = false;
@@ -1334,7 +1336,7 @@ fn opWheel(app: *App, op: []const []const u8) !void {
     for (0..2) |_| main.present(app, main.frame(app, app.size, .{ 0, 0 }));
 }
 
-/// `--hero-strike N`: the weapon page's striking hero, N-th in its list.
+/// `--hero-strike N`: the weapon page's striking hero, the N-th of the heroes with strikes (if it can strike with the weapon).
 /// `--attack ENEMY WEAPON show|copy|remove|give|FIELD=VALUE`: an enemy's attack by its
 /// weapon class (entry_attacks.zig): struck in the preview, copied, its own row removed,
 /// WEAPON given as a new attack, or a field of its row.
@@ -1348,7 +1350,7 @@ fn opAttack(app: *App, op: []const []const u8) !void {
     const list = ea.attacksOf(app, app.frame.allocator(), e, who);
     if (std.mem.eql(u8, op[3], "give")) return ea.addAttack(app, who, if (list.len > 0) list[0] else return error.NoAttack, try app.catalog.arena.allocator().dupe(u8, op[2]));
     const k = for (list, 0..) |at, n| {
-        if (std.ascii.eqlIgnoreCase(at.class, op[2])) break n;
+        if (std.ascii.eqlIgnoreCase(at.class, op[2]) or std.ascii.eqlIgnoreCase(@import("entry_rules.zig").bareClass(at.class), op[2])) break n;
     } else return error.NoSuchAttack;
     if (std.mem.eql(u8, op[3], "show")) {
         app.enemy_strike = @intCast(k);
@@ -1647,7 +1649,10 @@ fn opAiProfile(app: *App, op: []const []const u8) !void {
 }
 
 fn opStrikeHero(app: *App, op: []const []const u8) !void {
-    app.attack_hero = try std.fmt.parseInt(usize, op[1], 10);
+    const hs = @import("entry_model.zig").heroEntries(app, app.frame.allocator());
+    const k = try std.fmt.parseInt(usize, op[1], 10);
+    if (k >= hs.len) return error.NoSuchHero;
+    app.attack_hero = hs[k];
 }
 
 /// `--fx-put KEY STAGE PART`: a part (its rules text) after effect record KEY's of STAGE

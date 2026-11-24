@@ -294,6 +294,17 @@ fn testKit(self: *World) void {
         for (self.rt.ogs.modules.items) |*m| for (m.entities) |*x| if (std.mem.eql(u8, x.kind, "game")) break :found x;
         return;
     };
+    // A test room (`test_room = 1`): its heroes are the player's to play, whatever their
+    // story holds them to (Medusa: outside the party, chained until the museum's victory).
+    for (g.fields) |f| if (std.mem.eql(u8, f.name, "test_room") and f.value.kind == .lit and f.value.kind.lit == .int and f.value.kind.lit.int != 0) {
+        for (self.rt.objects.items) |o| {
+            const n = World.nativeOf(o);
+            if (n.kind != .actor or !n.hero) continue;
+            o.setInt("outside_party", 0);
+            fields.clearMoveLock(o);
+            o.setInt("attack_locked", 0);
+        }
+    };
     const list = for (g.fields) |f| {
         if (std.mem.eql(u8, f.name, "test_kit") and f.value.kind == .list) break f.value.kind.list;
     } else return;

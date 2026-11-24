@@ -1,0 +1,175 @@
+#pragma clang diagnostic ignored "-Wmissing-prototypes"
+#pragma clang diagnostic ignored "-Wmissing-braces"
+
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+template<typename T, size_t Num>
+struct spvUnsafeArray
+{
+    T elements[Num ? Num : 1];
+    
+    thread T& operator [] (size_t pos) thread
+    {
+        return elements[pos];
+    }
+    constexpr const thread T& operator [] (size_t pos) const thread
+    {
+        return elements[pos];
+    }
+    
+    device T& operator [] (size_t pos) device
+    {
+        return elements[pos];
+    }
+    constexpr const device T& operator [] (size_t pos) const device
+    {
+        return elements[pos];
+    }
+    
+    constexpr const constant T& operator [] (size_t pos) const constant
+    {
+        return elements[pos];
+    }
+    
+    threadgroup T& operator [] (size_t pos) threadgroup
+    {
+        return elements[pos];
+    }
+    constexpr const threadgroup T& operator [] (size_t pos) const threadgroup
+    {
+        return elements[pos];
+    }
+};
+
+struct _56
+{
+    uint _m0;
+    float _m1;
+    float _m2;
+    uint _m3;
+};
+
+struct _82
+{
+    uint _m0[1];
+};
+
+struct _214
+{
+    float _m0[1];
+};
+
+struct _236
+{
+    float _m0[64];
+};
+
+constant uint3 gl_WorkGroupSize [[maybe_unused]] = uint3(1u);
+
+kernel void main0(constant _56& _58 [[buffer(0)]], device _82& _84 [[buffer(1)]], device _214& _216 [[buffer(2)]], device _236& _238 [[buffer(3)]])
+{
+    spvUnsafeArray<float, 64> _47;
+    for (int _308 = 0; _308 < 64; )
+    {
+        _47[_308] = 3.0000000054977557577780399428115e+38;
+        _308++;
+        continue;
+    }
+    float _63 = _58._m1 * 0.125;
+    float _68 = _58._m2 * 0.125;
+    for (uint _309 = 0u; _309 < _58._m0; _309++)
+    {
+        uint _87 = _309 * 4u;
+        uint _311;
+        if ((_84._m0[_87] & 2147483648u) != 0u)
+        {
+            _311 = _84._m0[_87] & 2147483647u;
+        }
+        else
+        {
+            _311 = ~_84._m0[_87];
+        }
+        float _262 = as_type<float>(_311);
+        uint _96 = _87 + 1u;
+        uint _313;
+        if ((_84._m0[_96] & 2147483648u) != 0u)
+        {
+            _313 = _84._m0[_96] & 2147483647u;
+        }
+        else
+        {
+            _313 = ~_84._m0[_96];
+        }
+        float _277 = as_type<float>(_313);
+        uint _105 = _87 + 2u;
+        uint _315;
+        if ((_84._m0[_105] & 2147483648u) != 0u)
+        {
+            _315 = _84._m0[_105] & 2147483647u;
+        }
+        else
+        {
+            _315 = ~_84._m0[_105];
+        }
+        float _292 = as_type<float>(_315);
+        uint _114 = _87 + 3u;
+        uint _317;
+        if ((_84._m0[_114] & 2147483648u) != 0u)
+        {
+            _317 = _84._m0[_114] & 2147483647u;
+        }
+        else
+        {
+            _317 = ~_84._m0[_114];
+        }
+        float _307 = as_type<float>(_317);
+        bool _129 = ((isunordered(_262, _292) || _262 > _292) || (_292 < 0.0)) || (_307 < 0.0);
+        bool _137;
+        if (!_129)
+        {
+            _137 = _262 >= _58._m1;
+        }
+        else
+        {
+            _137 = _129;
+        }
+        bool _145;
+        if (!_137)
+        {
+            _145 = _277 >= _58._m2;
+        }
+        else
+        {
+            _145 = _137;
+        }
+        if (_145)
+        {
+            continue;
+        }
+        int _156 = int(fast::clamp(floor(_262 / _63), 0.0, 7.0));
+        int _163 = int(fast::clamp(floor(_292 / _63), 0.0, 7.0));
+        int _170 = int(fast::clamp(floor(_277 / _68), 0.0, 7.0));
+        int _177 = int(fast::clamp(floor(_307 / _68), 0.0, 7.0));
+        for (int _318 = _170; _318 <= _177; _318++)
+        {
+            for (int _319 = _156; _319 <= _163; _319++)
+            {
+                int _202 = (_318 * 8) + _319;
+                if (_47[_202] > 9.9999996802856924650656260769173e+37)
+                {
+                    _47[_202] = _216._m0[_309];
+                }
+            }
+        }
+    }
+    for (int _310 = 0; _310 < 64; )
+    {
+        _238._m0[_310] = _47[_310];
+        _310++;
+        continue;
+    }
+}
+

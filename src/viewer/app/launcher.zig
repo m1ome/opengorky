@@ -754,8 +754,10 @@ fn displayTab(l: *Launcher) void {
     if (choiceRow(l, "mode", "Image mode", modeText(l.cfg.scaling), &labels, std.mem.indexOfScalar(Scaling, modes, l.cfg.scaling), true, false)) |k| l.cfg.scaling = modes[k];
     toggleRow(l, "hires", "Sharp models and effects", "Render 3D models and effects at window resolution. Off: 640 × 480 like the original.", &l.cfg.hires, false);
     toggleRow(l, "fullscreen", "Fullscreen", "Start in fullscreen. F11 or Alt+Enter to toggle in the game.", &l.cfg.fullscreen, false);
-    if (choiceRow(l, "upscale", "Interface and portraits", "With sharp models on: smoothed edges or the original pixels, just larger.", &.{ "Smooth (xBR)", "Original pixels" }, @backingInt(l.cfg.upscale), l.cfg.hires, true)) |k|
+    if (choiceRow(l, "upscale", "Interface and portraits", "With sharp models on: smoothed edges or the original pixels, just larger.", &.{ "Smooth (xBR)", "Original pixels" }, @backingInt(l.cfg.upscale), l.cfg.hires, false)) |k|
         l.cfg.upscale = @fromBackingInt(@as(u1, @intCast(k)));
+    if (choiceRow(l, "renderer", "Models drawn by", "Processor: works everywhere. Video card: much faster with detailed models; the processor is used where there is none.", &.{ "Processor", "Video card" }, @backingInt(l.cfg.renderer), true, true)) |k|
+        l.cfg.renderer = @fromBackingInt(@as(u1, @intCast(k)));
 }
 
 fn gameTab(l: *Launcher) void {

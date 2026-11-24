@@ -1,0 +1,69 @@
+#include <metal_stdlib>
+#include <simd/simd.h>
+
+using namespace metal;
+
+struct _12
+{
+    float _m0;
+    float _m1;
+    float _m2;
+    float _m3;
+};
+
+struct main0_out
+{
+    float4 m_120 [[color(0)]];
+    float4 m_129 [[color(1)]];
+};
+
+struct main0_in
+{
+    float2 m_93 [[user(locn0)]];
+    float3 m_109 [[user(locn1)]];
+    float m_10 [[user(locn2)]];
+};
+
+fragment main0_out main0(main0_in in [[stage_in]], constant _12& _14 [[buffer(0)]], texture2d<float> _90 [[texture(0)]], texture2d<float> _43 [[texture(1)]], sampler _90Smplr [[sampler(0)]], sampler _43Smplr [[sampler(1)]], float4 gl_FragCoord [[position]])
+{
+    main0_out out = {};
+    int2 _38 = int2(gl_FragCoord.xy / float2(_14._m3));
+    int2 _47 = int2(_43.get_width(), _43.get_height());
+    bool _56 = _38.x < _47.x;
+    bool _65;
+    if (_56)
+    {
+        _65 = _38.y < _47.y;
+    }
+    else
+    {
+        _65 = _56;
+    }
+    bool _75;
+    if (_65)
+    {
+        _75 = (in.m_10 - (_14._m1 * abs(in.m_10))) >= _43.read(uint2(_38), 0).x;
+    }
+    else
+    {
+        _75 = _65;
+    }
+    if (_75)
+    {
+        discard_fragment();
+    }
+    float3 _136;
+    if (_14._m2 > 0.5)
+    {
+        _136 = _90.sample(_90Smplr, fast::clamp(in.m_93, float2(0.0), float2(1.0))).xyz;
+    }
+    else
+    {
+        _136 = float3(0.784313738346099853515625);
+    }
+    float _118 = fast::clamp(_14._m0, 0.0, 1.0);
+    out.m_120 = float4(fast::clamp(_136 * in.m_109, float3(0.0), float3(1.0)) * _118, _118);
+    out.m_129 = float4(in.m_10);
+    return out;
+}
+

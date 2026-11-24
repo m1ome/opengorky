@@ -42,6 +42,9 @@ pub const Entry = struct {
     /// An OpenGorky project's block (archive store.og_src): its path, the class its objects
     /// are of and its rows name (`characters::grandma`, rules.who).
     class: []const u8 = "",
+    /// OpenGorky: its file's block is a `fighter` (a hero by the party, or the enemy beside
+    /// a hero block of its class).
+    fighter_block: bool = false,
 };
 
 /// LinkActor("point", actor) in a level fighter's script (01cy_smokerider.ftr's
@@ -440,8 +443,20 @@ pub fn useOg(self: *Catalog, st: *store_mod.Store) void {
         // No classic_id (a converted project's): the number the OG reader made it (its path).
         if (id == null) id = og.core.entity.idOf(class);
         const t = if (id) |n| title(a, og.core.entity.texts.get(n), self.cyrillic) catch "" else "";
-        self.entries.append(a, .{ .kind = kind, .archive = og_src, .entry = path, .id = e.name, .title = t, .name_id = id, .class = class }) catch {};
+        // A fighter's weapons: the blocks inside it (`weapon la: weapons::fanglong`), by class.
+        // shortcut: not the battles' fighters' own weapons; read them too if a battle arms one otherwise.
+        var weapons: std.ArrayList([]const u8) = .empty;
+        for (e.children) |ch| if (std.mem.eql(u8, ch.kind, "weapon") and ch.base.len > 0) addUnique(a, &weapons, ch.base) catch {};
+        self.entries.append(a, .{ .kind = kind, .archive = og_src, .entry = path, .id = e.name, .title = t, .name_id = id, .class = class, .fighter_block = std.mem.eql(u8, e.kind, "fighter"), .weapons = weapons }) catch {};
     }
+    // A fighter with a hero block of its class (Medusa: `fighter medusa` and, in its own
+    // file, `hero medusa`) is the enemy; the hero block the party's.
+    for (self.entries.items) |*x| if (x.fighter_block and x.kind == .hero) for (self.entries.items) |y| {
+        if (y.kind == .hero and !y.fighter_block and std.mem.eql(u8, x.class, y.class)) {
+            x.kind = .enemy;
+            break;
+        }
+    };
 }
 
 /// An item block of ammo (`type = ammo`, its own; what a weapon's `ammo` names).

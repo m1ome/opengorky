@@ -198,7 +198,7 @@ pub fn modelNote(app: *App, name: []const u8) []const u8 {
 }
 
 /// OpenGorky: model `name` is the project's alone (the game has none) and nothing wears it.
-fn modelFree(app: *App, name: []const u8) bool {
+pub fn modelFree(app: *App, name: []const u8) bool {
     _ = modelNote(app, name);
     return og_models.alone.contains(name) and !og_models.used.contains(name);
 }
@@ -227,7 +227,7 @@ pub fn deleteModel(app: *App, name: []const u8) !void {
         if (app.store.file(common_archive, e)) |i| try files.append(a, i) else |_| {}
     }
     if (files.items.len == 0) return error.NoModelFiles;
-    if (doctabs.isShown(app, .models, name)) doctabs.closeActive(app);
+    if (doctabs.isShown(app, .models, name)) doctabs.dropActive(app);
     try app.store.delete(files.items);
     app.setStatus(tx.st_mdl_deleted, .{ name, files.items.len });
 }

@@ -57,6 +57,15 @@ pub fn afterStoreChange(self: *App, f: ?usize) void {
     };
     // A group's later parts still to come: the catalog once they are all back.
     if (!self.store.midGroup()) dropUnmade(self);
+    // OpenGorky: an entry's block back (its deletion undone): listed again.
+    const back = self.store.files.items[one];
+    if (self.store.root != null and !self.store.gone(one) and std.mem.eql(u8, back.archive, store_mod.og_src) and self.catalog.byKey(back.archive, back.entry) == null and entryDir(back.entry)) rebuildCatalog(self);
+}
+
+/// An OpenGorky text the catalog lists entries from (catalog.useOg's folders).
+fn entryDir(entry: []const u8) bool {
+    for ([_][]const u8{ "characters/", "weapons/", "items/" }) |d| if (std.mem.startsWith(u8, entry, d) and std.mem.indexOfScalar(u8, entry, '#') == null) return true;
+    return false;
 }
 
 /// File `f`'s own views: its icon drawn anew, the sprite and font pages showing it,
@@ -72,7 +81,7 @@ fn fileViews(self: *App, f: usize) void {
 /// Reads the catalog again (after save or discard: new classes are on disk or gone);
 /// the entry shown stays shown (by its unique key: a new class sorts in), unless it
 /// is gone. The scene shown is kept by name (`scene`).
-fn rebuildCatalog(self: *App) void {
+pub fn rebuildCatalog(self: *App) void {
     const entry_key = if (self.entry) |e| entries.keyOf(self.gpa, self.catalog.entries.items[e]) else null;
     defer if (entry_key) |s| self.gpa.free(s);
     self.entry = null;
